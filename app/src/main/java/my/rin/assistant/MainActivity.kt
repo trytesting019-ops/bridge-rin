@@ -1,6 +1,8 @@
 package my.rin.assistant
 
 import android.Manifest
+import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -41,6 +43,8 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.io.File
+import android.util.Base64
 
 private val Night = Color(0xFF090B18)
 private val Panel = Color(0xFF171A2D)
@@ -90,6 +94,51 @@ private suspend fun requestRinReply(deviceToken: String, history: List<ChatLine>
         }
     }
 
+private suspend fun requestRinTranscript(deviceToken: String, audioFile: File): String =
+    withContext(Dispatchers.IO) {
+        val connection = (URL("https://rin-bridge.trytesting019.workers.dev/v1/transcribe").openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 40000
+            connection.doOutput = true
+            connection.setRequestProperty("Authorization", "Bearer $deviceToken")
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            val audio = Base64.encodeToString(audioFile.readBytes(), Base64.NO_WRAP)
+            val payload = JSONObject().put("mimeType", "audio/mp4").put("audio", audio).toString()
+            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val response = try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
+            if (status !in 200..299) throw IllegalStateException(response.optString("message").ifBlank { response.optString("error", "HTTP $status") })
+            response.optString("transcript").takeIf { it.isNotBlank() } ?: throw IllegalStateException("Transkripsi kosong.")
+        } finally { connection.disconnect() }
+    }
+
+private suspend fun requestRinSpeech(deviceToken: String, text: String): ByteArray =
+    withContext(Dispatchers.IO) {
+        val connection = (URL("https://rin-bridge.trytesting019.workers.dev/v1/tts").openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 45000
+            connection.doOutput = true
+            connection.setRequestProperty("Authorization", "Bearer $deviceToken")
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            val payload = JSONObject().put("text", text.take(3000)).toString()
+            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val response = try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
+            if (status !in 200..299) throw IllegalStateException(response.optString("message").ifBlank { response.optString("error", "HTTP $status") })
+            val encoded = response.optString("audio")
+            if (encoded.isBlank()) throw IllegalStateException("Audio Rin kosong.")
+            Base64.decode(encoded, Base64.DEFAULT)
+        } finally { connection.disconnect() }
+    }
+
 class MainActivity : ComponentActivity() {
     private var speechRecognizer: SpeechRecognizer? = null
 
@@ -98,86 +147,79 @@ class MainActivity : ComponentActivity() {
         setContent { RinApp() }
     }
 
+    private var mediaRecorder: MediaRecorder? = null
+    private var recordingFile: File? = null
+    private var voicePlayer: MediaPlayer? = null
+
     fun startVoiceInput(
         onReady: () -> Unit,
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
         onError: (String) -> Unit
     ): Boolean {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            onError("Fungsi pengecaman suara tidak tersedia pada peranti ini.")
-            return false
-        }
-
         return try {
-            speechRecognizer?.destroy()
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also { recognizer ->
-                recognizer.setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) = onReady()
-                    override fun onBeginningOfSpeech() = Unit
-                    override fun onRmsChanged(rmsdB: Float) = Unit
-                    override fun onBufferReceived(buffer: ByteArray?) = Unit
-                    override fun onEndOfSpeech() = Unit
-                    override fun onEvent(eventType: Int, params: Bundle?) = Unit
-
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        partialResults
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()?.let(onPartial)
-                    }
-
-                    override fun onResults(results: Bundle?) {
-                        val spokenText = results
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                        if (!spokenText.isNullOrBlank()) onFinal(spokenText)
-                        else onError("Suara tidak dapat dikenal pasti. Cuba sekali lagi.")
-                    }
-
-                    override fun onError(error: Int) {
-                        val message = when (error) {
-                            SpeechRecognizer.ERROR_AUDIO -> "Masalah audio mikrofon."
-                            SpeechRecognizer.ERROR_CLIENT -> "Pengecaman suara dihentikan."
-                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Kebenaran mikrofon diperlukan."
-                            SpeechRecognizer.ERROR_NETWORK,
-                            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Sambungan rangkaian untuk pengecaman suara gagal."
-                            SpeechRecognizer.ERROR_NO_MATCH,
-                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Tiada suara dikesan. Cuba bercakap lebih dekat dengan mikrofon."
-                            SpeechRecognizer.ERROR_SERVER -> "Pelayan pengecaman suara Google bermasalah. Cuba lagi sebentar."
-                            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "Servis pengecaman suara terputus. Semak aplikasi Google dan sambungan internet."
-                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Pengecaman suara sedang digunakan. Tunggu seketika dan cuba lagi."
-                            SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "Terlalu banyak percubaan suara. Tunggu sebentar."
-                            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Servis suara pada peranti tidak menyokong bahasa Melayu. Pilih Google sebagai servis pengecaman suara dan cuba semula."
-                            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Pek bahasa Melayu belum tersedia. Muat turun bahasa Melayu dalam tetapan Google Speech Recognition."
-                            else -> "Pengecaman suara gagal (kod $error). Semak Speech Services/Google dan cuba lagi."
-                        }
-                        onError(message)
-                    }
-                })
-            }
-
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ms")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ms")
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            }
-            speechRecognizer?.startListening(intent)
+            val file = File(cacheDir, "rin_voice_${System.currentTimeMillis()}.m4a")
+            val recorder = MediaRecorder()
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioEncodingBitRate(96000)
+            recorder.setAudioSamplingRate(44100)
+            recorder.setOutputFile(file.absolutePath)
+            recorder.prepare()
+            recorder.start()
+            mediaRecorder = recorder
+            recordingFile = file
+            onReady()
             true
         } catch (exception: Exception) {
+            mediaRecorder?.release()
+            mediaRecorder = null
             onError("Mikrofon tidak dapat dimulakan: ${exception.localizedMessage ?: "ralat tidak diketahui"}")
             false
         }
     }
 
-    fun stopVoiceInput() {
-        try { speechRecognizer?.stopListening() } catch (_: Exception) { }
+    fun stopVoiceInput(): File? {
+        val recorder = mediaRecorder ?: return null
+        val file = recordingFile
+        return try {
+            recorder.stop()
+            recorder.reset()
+            recorder.release()
+            mediaRecorder = null
+            recordingFile = null
+            file?.takeIf { it.exists() && it.length() > 1000L }
+        } catch (_: Exception) {
+            recorder.release()
+            mediaRecorder = null
+            recordingFile = null
+            file?.delete()
+            null
+        }
     }
 
+    fun playRinVoice(audio: ByteArray, onError: (String) -> Unit) {
+        try {
+            val file = File(cacheDir, "rin_reply.wav")
+            file.writeBytes(audio)
+            voicePlayer?.release()
+            voicePlayer = MediaPlayer().also { player ->
+                player.setDataSource(file.absolutePath)
+                player.setOnPreparedListener { it.start() }
+                player.setOnCompletionListener { it.release(); if (voicePlayer === it) voicePlayer = null; file.delete() }
+                player.setOnErrorListener { mp, _, _ -> mp.release(); voicePlayer = null; file.delete(); onError("Audio suara Rin tidak dapat dimainkan."); true }
+                player.prepareAsync()
+            }
+        } catch (exception: Exception) { onError("Suara Rin gagal dimainkan: ${exception.localizedMessage ?: "ralat audio"}") }
+    }
     override fun onDestroy() {
         speechRecognizer?.destroy()
         speechRecognizer = null
+        mediaRecorder?.runCatching { stop(); release() }
+        mediaRecorder = null
+        voicePlayer?.release()
+        voicePlayer = null
         super.onDestroy()
     }
 }
@@ -288,9 +330,22 @@ fun RinApp() {
             ) {
                 IconButton(onClick = {
                     if (isListening) {
-                        activity.stopVoiceInput()
+                        val audioFile = activity.stopVoiceInput()
                         isListening = false
-                        voiceStatus = "Mikrofon dihentikan."
+                        if (audioFile != null && deviceToken.isNotBlank()) {
+                            isThinking = true
+                            voiceStatus = "Rin sedang menukar suara kepada teks..." 
+                            scope.launch {
+                                val result = runCatching { requestRinTranscript(deviceToken, audioFile) }
+                                audioFile.delete()
+                                draft = result.getOrElse { "Rin tidak dapat mengenal suara: ${it.message ?: "ralat rangkaian"}" }
+                                isThinking = false
+                                voiceStatus = if (result.isSuccess) "Suara Bahasa Melayu berjaya dikenal pasti." else "Pengecaman suara gagal."
+                            }
+                        } else {
+                            audioFile?.delete()
+                            voiceStatus = if (deviceToken.isBlank()) "Masukkan DEVICE_TOKEN dalam Tetapan AI dahulu." else "Rakaman terlalu pendek. Cuba sekali lagi."
+                        }
                     } else if (ContextCompat.checkSelfPermission(
                             activity, Manifest.permission.RECORD_AUDIO
                         ) == PackageManager.PERMISSION_GRANTED
@@ -358,8 +413,14 @@ fun RinApp() {
                                     }
                                     messages.add(ChatLine(reply, false))
                                     isThinking = false
-                                    voiceStatus = if (result.isSuccess) "Rin AI dalam talian telah membalas."
-                                        else "Sambungan AI belum berjaya."
+                                    voiceStatus = if (result.isSuccess) "Rin sedang menyediakan suara..." else "Sambungan AI belum berjaya."
+                                    if (result.isSuccess) {
+                                        val speech = runCatching { requestRinSpeech(deviceToken, reply) }
+                                        speech.onSuccess { audio ->
+                                            activity.playRinVoice(audio) { voiceStatus = it }
+                                            voiceStatus = "Rin sedang bercakap..."
+                                        }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
+                                    }
                                 }
                             }
                         }
@@ -376,7 +437,7 @@ fun RinApp() {
                 modifier = Modifier.align(Alignment.CenterHorizontally)
             )
             Spacer(Modifier.height(3.dp))
-            Text("AI melalui Cloudflare Worker • Mikrofon ms-MY",
+            Text("Gemini AI • Suara Bahasa Melayu Rin",
                 color = Color(0xFF9298B8), fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.CenterHorizontally))
         }
