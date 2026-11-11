@@ -307,6 +307,43 @@ fun RinApp() {
         mutableStateListOf(ChatLine("Hai. Rin sedia membantu.", false))
     }
 
+    val sendMessage: (String) -> Unit = { rawValue ->
+        val value = rawValue.trim()
+        if (value.isNotEmpty()) {
+            if (deviceToken.isBlank()) {
+                voiceStatus = "Masukkan DEVICE_TOKEN melalui Tetapan AI dahulu."
+                showSettings = true
+            } else {
+                val history = messages.toList() + ChatLine(value, true)
+                messages.add(ChatLine(value, true))
+                messages.add(ChatLine("Rin sedang berfikir...", false))
+                draft = ""
+                isThinking = true
+                voiceStatus = "Menghubungi Rin AI..."
+                scope.launch {
+                    val result = runCatching { requestRinReply(deviceToken, history) }
+                    if (messages.isNotEmpty() && messages.last().text == "Rin sedang berfikir...") {
+                        messages.removeAt(messages.lastIndex)
+                    }
+                    val reply = result.getOrElse { error ->
+                        val detail = if (error is SocketTimeoutException) "Sambungan mengambil masa terlalu lama. Cuba hantar semula." else (error.message ?: "Semak sambungan dan tetapan Worker.")
+                        "Rin belum dapat menjawab. $detail"
+                    }
+                    messages.add(ChatLine(reply, false))
+                    isThinking = false
+                    voiceStatus = if (result.isSuccess) "Rin sedang menyediakan suara..." else "Sambungan AI belum berjaya."
+                    if (result.isSuccess) {
+                        val speech = runCatching { requestRinSpeech(deviceToken, reply) }
+                        speech.onSuccess { audio ->
+                            activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
+                            voiceStatus = "Rin sedang bercakap..."
+                        }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
+                    }
+                }
+            }
+        }
+    }
+
     val microphonePermission = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -407,9 +444,14 @@ fun RinApp() {
                             scope.launch {
                                 val result = runCatching { requestRinTranscript(deviceToken, audioFile) }
                                 audioFile.delete()
-                                draft = result.getOrElse { "Rin tidak dapat mengenal suara: ${it.message ?: "ralat rangkaian"}" }
                                 isThinking = false
-                                voiceStatus = if (result.isSuccess) "Suara Bahasa Melayu berjaya dikenal pasti." else "Pengecaman suara gagal."
+                                if (result.isSuccess) {
+                                    voiceStatus = "Suara dikenal pasti. Rin sedang memproses..."
+                                    sendMessage(result.getOrThrow())
+                                } else {
+                                    draft = "Rin tidak dapat mengenal suara: ${result.exceptionOrNull()?.message ?: "ralat rangkaian"}"
+                                    voiceStatus = "Pengecaman suara gagal."
+                                }
                             }
                         } else {
                             audioFile?.delete()
@@ -458,41 +500,7 @@ fun RinApp() {
                 )
                 IconButton(
                     enabled = !isThinking,
-                    onClick = {
-                        val value = draft.trim()
-                        if (value.isNotEmpty()) {
-                            if (deviceToken.isBlank()) {
-                                voiceStatus = "Masukkan DEVICE_TOKEN melalui Tetapan AI dahulu."
-                                showSettings = true
-                            } else {
-                                val history = messages.toList() + ChatLine(value, true)
-                                messages.add(ChatLine(value, true))
-                                messages.add(ChatLine("Rin sedang berfikir...", false))
-                                draft = ""
-                                isThinking = true
-                                voiceStatus = "Menghubungi Rin AI..."
-                                scope.launch {
-                                    val result = runCatching { requestRinReply(deviceToken, history) }
-                                    if (messages.isNotEmpty() && messages.last().text == "Rin sedang berfikir...") {
-                                        messages.removeAt(messages.lastIndex)
-                                    }
-                                    val reply = result.getOrElse { error ->
-                                        val detail = if (error is SocketTimeoutException) "Sambungan mengambil masa terlalu lama. Cuba hantar semula." else (error.message ?: "Semak sambungan dan tetapan Worker.")
-                                        "Rin belum dapat menjawab. $detail"
-                                    }
-                                    messages.add(ChatLine(reply, false))
-                                    isThinking = false
-                                    voiceStatus = if (result.isSuccess) "Rin sedang menyediakan suara..." else "Sambungan AI belum berjaya."
-                                    if (result.isSuccess) {
-                                        val speech = runCatching { requestRinSpeech(deviceToken, reply) }
-                                        speech.onSuccess { audio ->
-                                            activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
-                                            voiceStatus = "Rin sedang bercakap..."
-                                        }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
-                                    }
-                                }
-                            }
-                        }
+                    onClick = { sendMessage(draft) }
                     }
                 ) {
                     Icon(Icons.Default.Send, contentDescription = "Hantar", tint = Violet)
