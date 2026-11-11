@@ -1,8 +1,16 @@
 package my.rin.assistant
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,9 +27,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 
 private val Night = Color(0xFF090B18)
 private val Panel = Color(0xFF171A2D)
@@ -31,17 +41,131 @@ private val Cyan = Color(0xFF69D9F5)
 data class ChatLine(val text: String, val fromUser: Boolean)
 
 class MainActivity : ComponentActivity() {
+    private var speechRecognizer: SpeechRecognizer? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { RinApp() }
+    }
+
+    fun startVoiceInput(
+        onReady: () -> Unit,
+        onPartial: (String) -> Unit,
+        onFinal: (String) -> Unit,
+        onError: (String) -> Unit
+    ): Boolean {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            onError("Fungsi pengecaman suara tidak tersedia pada peranti ini.")
+            return false
+        }
+
+        return try {
+            speechRecognizer?.destroy()
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also { recognizer ->
+                recognizer.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) = onReady()
+                    override fun onBeginningOfSpeech() = Unit
+                    override fun onRmsChanged(rmsdB: Float) = Unit
+                    override fun onBufferReceived(buffer: ByteArray?) = Unit
+                    override fun onEndOfSpeech() = Unit
+                    override fun onEvent(eventType: Int, params: Bundle?) = Unit
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        partialResults
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                            ?.let(onPartial)
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        val spokenText = results
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                        if (!spokenText.isNullOrBlank()) {
+                            onFinal(spokenText)
+                        } else {
+                            onError("Suara tidak dapat dikenal pasti. Cuba sekali lagi.")
+                        }
+                    }
+
+                    override fun onError(error: Int) {
+                        val message = when (error) {
+                            SpeechRecognizer.ERROR_AUDIO -> "Masalah audio mikrofon."
+                            SpeechRecognizer.ERROR_CLIENT -> "Pengecaman suara dihentikan."
+                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Kebenaran mikrofon diperlukan."
+                            SpeechRecognizer.ERROR_NETWORK,
+                            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Sambungan rangkaian untuk pengecaman suara gagal."
+                            SpeechRecognizer.ERROR_NO_MATCH,
+                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Tiada suara dikesan. Cuba bercakap lebih dekat dengan mikrofon."
+                            else -> "Pengecaman suara gagal. Cuba sekali lagi."
+                        }
+                        onError(message)
+                    }
+                })
+            }
+
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ms-MY")
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ms-MY")
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            }
+            speechRecognizer?.startListening(intent)
+            true
+        } catch (exception: Exception) {
+            onError("Mikrofon tidak dapat dimulakan: ${exception.localizedMessage ?: "ralat tidak diketahui"}")
+            false
+        }
+    }
+
+    fun stopVoiceInput() {
+        try {
+            speechRecognizer?.stopListening()
+        } catch (_: Exception) {
+            // The recognizer may already have stopped.
+        }
+    }
+
+    override fun onDestroy() {
+        speechRecognizer?.destroy()
+        speechRecognizer = null
+        super.onDestroy()
     }
 }
 
 @Composable
 fun RinApp() {
     var draft by remember { mutableStateOf("") }
+    var isListening by remember { mutableStateOf(false) }
+    var voiceStatus by remember { mutableStateOf("Tekan mikrofon untuk bercakap.") }
+    val activity = LocalContext.current as MainActivity
     val messages = remember {
         mutableStateListOf(ChatLine("Hai sayang. Rin sedia membantu.", false))
+    }
+
+    val microphonePermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            isListening = activity.startVoiceInput(
+                onReady = { voiceStatus = "Rin sedang mendengar..." },
+                onPartial = { draft = it },
+                onFinal = {
+                    draft = it
+                    isListening = false
+                    voiceStatus = "Suara berjaya ditukar kepada teks."
+                },
+                onError = {
+                    isListening = false
+                    voiceStatus = it
+                }
+            )
+            if (isListening) voiceStatus = "Menyediakan mikrofon..."
+        } else {
+            isListening = false
+            voiceStatus = "Kebenaran mikrofon tidak diberikan."
+        }
     }
 
     MaterialTheme(colorScheme = darkColorScheme(
@@ -104,8 +228,38 @@ fun RinApp() {
                 Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(28.dp)).padding(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { /* Voice input will be added in the next phase. */ }) {
-                    Icon(Icons.Default.Mic, contentDescription = "Mikrofon", tint = Cyan)
+                IconButton(onClick = {
+                    if (isListening) {
+                        activity.stopVoiceInput()
+                        isListening = false
+                        voiceStatus = "Mikrofon dihentikan."
+                    } else if (ContextCompat.checkSelfPermission(
+                            activity, Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        isListening = activity.startVoiceInput(
+                            onReady = { voiceStatus = "Rin sedang mendengar..." },
+                            onPartial = { draft = it },
+                            onFinal = {
+                                draft = it
+                                isListening = false
+                                voiceStatus = "Suara berjaya ditukar kepada teks."
+                            },
+                            onError = {
+                                isListening = false
+                                voiceStatus = it
+                            }
+                        )
+                        if (isListening) voiceStatus = "Menyediakan mikrofon..."
+                    } else {
+                        microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }) {
+                    Icon(
+                        Icons.Default.Mic,
+                        contentDescription = if (isListening) "Hentikan mikrofon" else "Aktifkan mikrofon",
+                        tint = if (isListening) Color(0xFFFF8585) else Cyan
+                    )
                 }
                 TextField(
                     value = draft,
@@ -133,7 +287,14 @@ fun RinApp() {
                     Icon(Icons.Default.Send, contentDescription = "Hantar", tint = Violet)
                 }
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(5.dp))
+            Text(
+                voiceStatus,
+                color = if (isListening) Cyan else Color(0xFF9298B8),
+                fontSize = 11.sp,
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            )
+            Spacer(Modifier.height(3.dp))
             Text("Versi asas • Chat tempatan demo", color = Color(0xFF9298B8), fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.CenterHorizontally))
         }
