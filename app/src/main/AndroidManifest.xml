@@ -5,6 +5,8 @@
     <application
         android:allowBackup="false"
         android:label="Rin"
+        android:icon="@drawable/rin_launcher"
+        android:roundIcon="@drawable/rin_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
         <activity
