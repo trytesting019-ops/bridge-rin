@@ -21,24 +21,73 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 private val Night = Color(0xFF090B18)
 private val Panel = Color(0xFF171A2D)
 private val Violet = Color(0xFF9B7BFF)
 private val Cyan = Color(0xFF69D9F5)
+private const val RIN_CHAT_URL = "https://rin-bridge.trytesting019.workers.dev/v1/chat"
 
 data class ChatLine(val text: String, val fromUser: Boolean)
+
+private suspend fun requestRinReply(deviceToken: String, history: List<ChatLine>): String =
+    withContext(Dispatchers.IO) {
+        val connection = (URL(RIN_CHAT_URL).openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 60000
+            connection.doOutput = true
+            connection.setRequestProperty("Authorization", "Bearer $deviceToken")
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+
+            val contents = JSONArray()
+            history.takeLast(16).forEach { line ->
+                contents.put(
+                    JSONObject()
+                        .put("role", if (line.fromUser) "user" else "model")
+                        .put("text", line.text)
+                )
+            }
+            val payload = JSONObject().put("messages", contents).toString()
+            connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val response = try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
+
+            if (status !in 200..299) {
+                val error = response.optString("message")
+                    .ifBlank { response.optString("error", "HTTP $status") }
+                throw IllegalStateException(error)
+            }
+
+            response.optString("reply").takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("AI tidak memulangkan jawapan.")
+        } finally {
+            connection.disconnect()
+        }
+    }
 
 class MainActivity : ComponentActivity() {
     private var speechRecognizer: SpeechRecognizer? = null
@@ -73,19 +122,15 @@ class MainActivity : ComponentActivity() {
                     override fun onPartialResults(partialResults: Bundle?) {
                         partialResults
                             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                            ?.let(onPartial)
+                            ?.firstOrNull()?.let(onPartial)
                     }
 
                     override fun onResults(results: Bundle?) {
                         val spokenText = results
                             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             ?.firstOrNull()
-                        if (!spokenText.isNullOrBlank()) {
-                            onFinal(spokenText)
-                        } else {
-                            onError("Suara tidak dapat dikenal pasti. Cuba sekali lagi.")
-                        }
+                        if (!spokenText.isNullOrBlank()) onFinal(spokenText)
+                        else onError("Suara tidak dapat dikenal pasti. Cuba sekali lagi.")
                     }
 
                     override fun onError(error: Int) {
@@ -120,11 +165,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun stopVoiceInput() {
-        try {
-            speechRecognizer?.stopListening()
-        } catch (_: Exception) {
-            // The recognizer may already have stopped.
-        }
+        try { speechRecognizer?.stopListening() } catch (_: Exception) { }
     }
 
     override fun onDestroy() {
@@ -138,8 +179,14 @@ class MainActivity : ComponentActivity() {
 fun RinApp() {
     var draft by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
-    var voiceStatus by remember { mutableStateOf("Tekan mikrofon untuk bercakap.") }
-    val activity = LocalContext.current as MainActivity
+    var isThinking by remember { mutableStateOf(false) }
+    var voiceStatus by remember { mutableStateOf("AI dalam talian belum diuji pada peranti.") }
+    var showSettings by remember { mutableStateOf(false) }
+    val activity = androidx.compose.ui.platform.LocalContext.current as MainActivity
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val preferences = remember { context.getSharedPreferences("rin_private", MODE_PRIVATE) }
+    var deviceToken by remember { mutableStateOf(preferences.getString("device_token", "") ?: "") }
+    val scope = rememberCoroutineScope()
     val messages = remember {
         mutableStateListOf(ChatLine("Hai sayang. Rin sedia membantu.", false))
     }
@@ -193,8 +240,12 @@ fun RinApp() {
                 }
                 Spacer(Modifier.weight(1f))
                 Surface(color = Color(0x3329D7B5), shape = RoundedCornerShape(20.dp)) {
-                    Text("● Sedia", Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    Text("● ${if (deviceToken.isNotBlank()) "AI sedia" else "Tetapan"}",
+                        Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                         color = Color(0xFF70E4C4), fontSize = 12.sp)
+                }
+                IconButton(onClick = { showSettings = true }) {
+                    Icon(Icons.Default.Settings, contentDescription = "Tetapan AI", tint = Cyan)
                 }
             }
 
@@ -255,11 +306,9 @@ fun RinApp() {
                         microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 }) {
-                    Icon(
-                        Icons.Default.Mic,
+                    Icon(Icons.Default.Mic,
                         contentDescription = if (isListening) "Hentikan mikrofon" else "Aktifkan mikrofon",
-                        tint = if (isListening) Color(0xFFFF8585) else Cyan
-                    )
+                        tint = if (isListening) Color(0xFFFF8585) else Cyan)
                 }
                 TextField(
                     value = draft,
@@ -276,27 +325,82 @@ fun RinApp() {
                     ),
                     maxLines = 4
                 )
-                IconButton(onClick = {
-                    val value = draft.trim()
-                    if (value.isNotEmpty()) {
-                        messages.add(ChatLine(value, true))
-                        messages.add(ChatLine("Rin sudah terima mesej sayang. Sambungan AI akan diaktifkan dalam fasa seterusnya.", false))
-                        draft = ""
+                IconButton(
+                    enabled = !isThinking,
+                    onClick = {
+                        val value = draft.trim()
+                        if (value.isNotEmpty()) {
+                            if (deviceToken.isBlank()) {
+                                voiceStatus = "Masukkan DEVICE_TOKEN melalui Tetapan AI dahulu."
+                                showSettings = true
+                            } else {
+                                val history = messages.toList() + ChatLine(value, true)
+                                messages.add(ChatLine(value, true))
+                                messages.add(ChatLine("Rin sedang berfikir...", false))
+                                draft = ""
+                                isThinking = true
+                                voiceStatus = "Menghubungi Rin AI..."
+                                scope.launch {
+                                    val result = runCatching { requestRinReply(deviceToken, history) }
+                                    if (messages.isNotEmpty() && messages.last().text == "Rin sedang berfikir...") {
+                                        messages.removeAt(messages.lastIndex)
+                                    }
+                                    val reply = result.getOrElse { error ->
+                                        "Rin belum dapat menjawab. ${error.message ?: "Semak sambungan dan tetapan Worker."}"
+                                    }
+                                    messages.add(ChatLine(reply, false))
+                                    isThinking = false
+                                    voiceStatus = if (result.isSuccess) "Rin AI dalam talian telah membalas."
+                                        else "Sambungan AI belum berjaya."
+                                }
+                            }
+                        }
                     }
-                }) {
+                ) {
                     Icon(Icons.Default.Send, contentDescription = "Hantar", tint = Violet)
                 }
             }
             Spacer(Modifier.height(5.dp))
             Text(
                 voiceStatus,
-                color = if (isListening) Cyan else Color(0xFF9298B8),
+                color = if (isListening || isThinking) Cyan else Color(0xFF9298B8),
                 fontSize = 11.sp,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
             )
             Spacer(Modifier.height(3.dp))
-            Text("Versi asas • Chat tempatan demo", color = Color(0xFF9298B8), fontSize = 10.sp,
+            Text("AI melalui Cloudflare Worker • Mikrofon ms-MY",
+                color = Color(0xFF9298B8), fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.CenterHorizontally))
+        }
+
+        if (showSettings) {
+            AlertDialog(
+                onDismissRequest = { showSettings = false },
+                title = { Text("Tetapan sambungan Rin AI") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Masukkan DEVICE_TOKEN yang sama seperti rahsia DEVICE_TOKEN dalam Cloudflare Worker. Jangan masukkan GEMINI_API_KEY di sini.")
+                        OutlinedTextField(
+                            value = deviceToken,
+                            onValueChange = { deviceToken = it.trim() },
+                            label = { Text("DEVICE_TOKEN") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        preferences.edit().putString("device_token", deviceToken.trim()).apply()
+                        deviceToken = deviceToken.trim()
+                        showSettings = false
+                        voiceStatus = "Token disimpan pada storan peribadi aplikasi."
+                    }) { Text("Simpan") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showSettings = false }) { Text("Tutup") }
+                }
+            )
         }
     }
 }
