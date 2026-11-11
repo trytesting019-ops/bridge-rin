@@ -304,7 +304,7 @@ fun RinApp() {
     var deviceToken by remember { mutableStateOf(preferences.getString("device_token", "") ?: "") }
     val scope = rememberCoroutineScope()
     val messages = remember {
-        mutableStateListOf(ChatLine("Hai sayang. Rin sedia membantu.", false))
+        mutableStateListOf(ChatLine("Hai. Rin sedia membantu.", false))
     }
 
     val microphonePermission = rememberLauncherForActivityResult(
