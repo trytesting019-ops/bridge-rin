@@ -39,6 +39,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 
 private val Night = Color(0xFF090B18)
@@ -55,7 +56,7 @@ private suspend fun requestRinReply(deviceToken: String, history: List<ChatLine>
         try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 15000
-            connection.readTimeout = 60000
+            connection.readTimeout = 65000
             connection.doOutput = true
             connection.setRequestProperty("Authorization", "Bearer $deviceToken")
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -352,7 +353,8 @@ fun RinApp() {
                                         messages.removeAt(messages.lastIndex)
                                     }
                                     val reply = result.getOrElse { error ->
-                                        "Rin belum dapat menjawab. ${error.message ?: "Semak sambungan dan tetapan Worker."}"
+                                        val detail = if (error is SocketTimeoutException) "Sambungan mengambil masa terlalu lama. Cuba hantar semula." else (error.message ?: "Semak sambungan dan tetapan Worker.")
+                                        "Rin belum dapat menjawab. $detail"
                                     }
                                     messages.add(ChatLine(reply, false))
                                     isThinking = false
