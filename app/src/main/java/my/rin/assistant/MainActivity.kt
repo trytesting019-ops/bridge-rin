@@ -142,7 +142,13 @@ class MainActivity : ComponentActivity() {
                             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Sambungan rangkaian untuk pengecaman suara gagal."
                             SpeechRecognizer.ERROR_NO_MATCH,
                             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Tiada suara dikesan. Cuba bercakap lebih dekat dengan mikrofon."
-                            else -> "Pengecaman suara gagal. Cuba sekali lagi."
+                            SpeechRecognizer.ERROR_SERVER -> "Pelayan pengecaman suara Google bermasalah. Cuba lagi sebentar."
+                            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "Servis pengecaman suara terputus. Semak aplikasi Google dan sambungan internet."
+                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Pengecaman suara sedang digunakan. Tunggu seketika dan cuba lagi."
+                            SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "Terlalu banyak percubaan suara. Tunggu sebentar."
+                            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Bahasa Melayu (Malaysia) tidak disokong oleh servis suara pada peranti."
+                            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Pek bahasa Melayu belum tersedia. Pasang atau kemas kini Speech Recognition Google."
+                            else -> "Pengecaman suara gagal (kod $error). Semak Speech Services/Google dan cuba lagi."
                         }
                         onError(message)
                     }
