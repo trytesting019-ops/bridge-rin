@@ -13,6 +13,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -199,15 +210,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun playRinVoice(audio: ByteArray, onError: (String) -> Unit) {
+    fun playRinVoice(audio: ByteArray, onStart: () -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
         try {
             val file = File(cacheDir, "rin_reply.wav")
             file.writeBytes(audio)
             voicePlayer?.release()
             voicePlayer = MediaPlayer().also { player ->
                 player.setDataSource(file.absolutePath)
-                player.setOnPreparedListener { it.start() }
-                player.setOnCompletionListener { it.release(); if (voicePlayer === it) voicePlayer = null; file.delete() }
+                player.setOnPreparedListener { onStart(); it.start() }
+                player.setOnCompletionListener { it.release(); if (voicePlayer === it) voicePlayer = null; file.delete(); onComplete() }
                 player.setOnErrorListener { mp, _, _ -> mp.release(); voicePlayer = null; file.delete(); onError("Audio suara Rin tidak dapat dimainkan."); true }
                 player.prepareAsync()
             }
@@ -226,10 +237,65 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+private fun RinAvatar(isListening: Boolean, isThinking: Boolean, isSpeaking: Boolean) {
+    val transition = rememberInfiniteTransition()
+    val pulse by transition.animateFloat(
+        initialValue = 0.96f,
+        targetValue = if (isSpeaking) 1.075f else if (isListening) 1.045f else 1.02f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = if (isSpeaking) 360 else 1350),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    val glow by transition.animateFloat(
+        initialValue = 0.30f,
+        targetValue = if (isSpeaking) 0.95f else if (isListening) 0.75f else 0.48f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = if (isSpeaking) 300 else 1200),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    val state = when {
+        isSpeaking -> "RIN SEDANG BERCAKAP"
+        isThinking -> "RIN SEDANG BERFIKIR"
+        isListening -> "RIN SEDANG MENDENGAR"
+        else -> "RIN SEDIA"
+    }
+    val accent = if (isSpeaking) Cyan else Violet
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(158.dp).graphicsLayer { scaleX = pulse; scaleY = pulse }
+                .background(Brush.radialGradient(listOf(Cyan.copy(alpha = glow * 0.30f), Violet.copy(alpha = glow * 0.12f), Color.Transparent)), CircleShape)
+                .border(2.dp, accent.copy(alpha = glow), CircleShape).padding(7.dp)
+                .background(Panel, CircleShape).padding(5.dp).clip(CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(painter = painterResource(id = R.drawable.rin_launcher), contentDescription = "Avatar Rin",
+                modifier = Modifier.fillMaxSize().clip(CircleShape), contentScale = ContentScale.Crop)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(state, color = accent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        if (isSpeaking) {
+            Spacer(Modifier.height(5.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                repeat(5) { index ->
+                    val bar by transition.animateFloat(
+                        initialValue = 5f, targetValue = (10 + ((index * 7) % 15)).toFloat(),
+                        animationSpec = infiniteRepeatable(animation = tween(230 + index * 65), repeatMode = RepeatMode.Reverse)
+                    )
+                    Box(Modifier.width(4.dp).height(bar.dp).background(Cyan, RoundedCornerShape(4.dp)))
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun RinApp() {
     var draft by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
     var isThinking by remember { mutableStateOf(false) }
+    var isSpeaking by remember { mutableStateOf(false) }
     var voiceStatus by remember { mutableStateOf("AI dalam talian belum diuji pada peranti.") }
     var showSettings by remember { mutableStateOf(false) }
     val activity = androidx.compose.ui.platform.LocalContext.current as MainActivity
@@ -302,6 +368,8 @@ fun RinApp() {
             Spacer(Modifier.height(18.dp))
             HorizontalDivider(color = Color(0x334D5A88))
             Spacer(Modifier.height(12.dp))
+
+            RinAvatar(isListening = isListening, isThinking = isThinking, isSpeaking = isSpeaking)
 
             LazyColumn(
                 Modifier.weight(1f).fillMaxWidth(),
@@ -418,7 +486,7 @@ fun RinApp() {
                                     if (result.isSuccess) {
                                         val speech = runCatching { requestRinSpeech(deviceToken, reply) }
                                         speech.onSuccess { audio ->
-                                            activity.playRinVoice(audio) { voiceStatus = it }
+                                            activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
                                             voiceStatus = "Rin sedang bercakap..."
                                         }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
                                     }
