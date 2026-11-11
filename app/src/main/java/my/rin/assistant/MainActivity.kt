@@ -72,7 +72,7 @@ private fun isExternalWritingInstruction(text: String): Boolean {
     return target && action
 }
 
-data class ChatLine(val text: String, val fromUser: Boolean)
+data class ChatLine(val text: String, val fromUser: Boolean, val showInChat: Boolean = true)
 
 private suspend fun requestRinReply(deviceToken: String, history: List<ChatLine>): String =
     withContext(Dispatchers.IO) {
@@ -316,15 +316,15 @@ fun RinApp() {
         mutableStateListOf(ChatLine("Hai. Rin sedia membantu.", false))
     }
 
-    val sendMessage: (String) -> Unit = { rawValue ->
+    val sendMessage: (String, Boolean) -> Unit = { rawValue, fromVoice ->
         val value = rawValue.trim()
         if (value.isNotEmpty()) {
             if (deviceToken.isBlank()) {
                 voiceStatus = "Masukkan DEVICE_TOKEN melalui Tetapan AI dahulu."
                 showSettings = true
             } else {
-                val history = messages.toList() + ChatLine(value, true)
-                messages.add(ChatLine(value, true))
+                val history = messages.toList() + ChatLine(value, true, !fromVoice)
+                messages.add(ChatLine(value, true, !fromVoice))
                 messages.add(ChatLine("Rin sedang berfikir...", false))
                 draft = ""
                 isThinking = true
@@ -338,7 +338,7 @@ fun RinApp() {
                         val detail = if (error is SocketTimeoutException) "Sambungan mengambil masa terlalu lama. Cuba hantar semula." else (error.message ?: "Semak sambungan dan tetapan Worker.")
                         "Rin belum dapat menjawab. $detail"
                     }
-                    messages.add(ChatLine(reply, false))
+                    messages.add(ChatLine(reply, false, !fromVoice || isExternalWritingInstruction(value)))
                     isThinking = false
                     voiceStatus = if (result.isSuccess) "Rin sedang menyediakan suara..." else "Sambungan AI belum berjaya."
                     if (result.isSuccess) {
@@ -426,7 +426,7 @@ fun RinApp() {
                 Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(messages) { line ->
+                items(messages.filter { it.showInChat }) { line ->
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = if (line.fromUser) Arrangement.End else Arrangement.Start
@@ -461,7 +461,7 @@ fun RinApp() {
                                 isThinking = false
                                 if (result.isSuccess) {
                                     voiceStatus = "Suara dikenal pasti. Rin sedang memproses..."
-                                    sendMessage(result.getOrThrow())
+                                    sendMessage(result.getOrThrow(), true)
                                 } else {
                                     draft = "Rin tidak dapat mengenal suara: ${result.exceptionOrNull()?.message ?: "ralat rangkaian"}"
                                     voiceStatus = "Pengecaman suara gagal."
@@ -514,8 +514,7 @@ fun RinApp() {
                 )
                 IconButton(
                     enabled = !isThinking,
-                    onClick = { sendMessage(draft) }
-                    }
+                    onClick = { sendMessage(draft, false) }
                 ) {
                     Icon(Icons.Default.Send, contentDescription = "Hantar", tint = Violet)
                 }
