@@ -1,6 +1,8 @@
 package my.rin.assistant
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.content.Intent
@@ -13,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -33,6 +36,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -40,6 +47,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -336,11 +344,25 @@ fun RinApp() {
     var isSpeaking by remember { mutableStateOf(false) }
     var voiceStatus by remember { mutableStateOf("AI dalam talian belum diuji pada peranti.") }
     var showSettings by remember { mutableStateOf(false) }
+    var showAttachmentMenu by remember { mutableStateOf(false) }
+    var attachedImage by remember { mutableStateOf<Bitmap?>(null) }
     val activity = androidx.compose.ui.platform.LocalContext.current as MainActivity
     val context = androidx.compose.ui.platform.LocalContext.current
     val preferences = remember { context.getSharedPreferences("rin_private", android.content.Context.MODE_PRIVATE) }
     var deviceToken by remember { mutableStateOf(preferences.getString("device_token", "") ?: "") }
     val scope = rememberCoroutineScope()
+    val galleryPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            attachedImage = runCatching { context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) } }.getOrNull()
+            voiceStatus = if (attachedImage != null) "Gambar dipilih. Sokongan hantar gambar kepada AI sedang disiapkan." else "Gambar tidak dapat dibuka."
+        }
+    }
+    val cameraPicker = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap != null) {
+            attachedImage = bitmap
+            voiceStatus = "Gambar kamera dipilih. Sokongan hantar gambar kepada AI sedang disiapkan."
+        }
+    }
     val messages = remember {
         mutableStateListOf(ChatLine("Hai. Rin sedia membantu.", false))
     }
@@ -473,10 +495,31 @@ fun RinApp() {
                 }
             }
 
+            if (attachedImage != null) {
+                Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Image(bitmap = attachedImage!!.asImageBitmap(), contentDescription = "Gambar lampiran", modifier = Modifier.size(76.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Gambar dilampirkan", color = Color.White, fontSize = 13.sp)
+                        Text("Pemprosesan imej AI belum aktif", color = Color(0xFFFFD27A), fontSize = 11.sp)
+                    }
+                    IconButton(onClick = { attachedImage = null }) { Icon(Icons.Default.Close, contentDescription = "Buang gambar", tint = Color.LightGray) }
+                }
+            }
+
             Row(
                 Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(28.dp)).padding(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Box {
+                    IconButton(onClick = { showAttachmentMenu = true }) {
+                        Icon(Icons.Default.Add, contentDescription = "Tambah gambar", tint = Cyan)
+                    }
+                    DropdownMenu(expanded = showAttachmentMenu, onDismissRequest = { showAttachmentMenu = false }) {
+                        DropdownMenuItem(text = { Text("Buka kamera") }, leadingIcon = { Icon(Icons.Default.CameraAlt, null) }, onClick = { showAttachmentMenu = false; cameraPicker.launch(null) })
+                        DropdownMenuItem(text = { Text("Pilih gambar") }, leadingIcon = { Icon(Icons.Default.Photo, null) }, onClick = { showAttachmentMenu = false; galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
+                    }
+                }
                 IconButton(onClick = {
                     if (isListening) {
                         val audioFile = activity.stopVoiceInput()
