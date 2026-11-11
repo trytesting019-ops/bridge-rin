@@ -216,7 +216,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         speechRecognizer?.destroy()
         speechRecognizer = null
-        mediaRecorder?.runCatching { stop(); release() }
+        try { mediaRecorder?.stop() } catch (_: Exception) { }
+        try { mediaRecorder?.release() } catch (_: Exception) { }
         mediaRecorder = null
         voicePlayer?.release()
         voicePlayer = null
