@@ -147,8 +147,8 @@ class MainActivity : ComponentActivity() {
                             SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "Servis pengecaman suara terputus. Semak aplikasi Google dan sambungan internet."
                             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Pengecaman suara sedang digunakan. Tunggu seketika dan cuba lagi."
                             SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "Terlalu banyak percubaan suara. Tunggu sebentar."
-                            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Bahasa Melayu (Malaysia) tidak disokong oleh servis suara pada peranti."
-                            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Pek bahasa Melayu belum tersedia. Pasang atau kemas kini Speech Recognition Google."
+                            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "Servis suara pada peranti tidak menyokong bahasa Melayu. Pilih Google sebagai servis pengecaman suara dan cuba semula."
+                            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Pek bahasa Melayu belum tersedia. Muat turun bahasa Melayu dalam tetapan Google Speech Recognition."
                             else -> "Pengecaman suara gagal (kod $error). Semak Speech Services/Google dan cuba lagi."
                         }
                         onError(message)
@@ -158,8 +158,8 @@ class MainActivity : ComponentActivity() {
 
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ms-MY")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ms-MY")
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ms")
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ms")
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             }
