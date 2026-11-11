@@ -159,6 +159,35 @@ private suspend fun requestRinSpeech(deviceToken: String, text: String): ByteArr
         } finally { connection.disconnect() }
     }
 
+private suspend fun requestRinSpeechCached(cacheRoot: File, deviceToken: String, text: String): ByteArray =
+    withContext(Dispatchers.IO) {
+        val cacheDir = File(cacheRoot, "rin_tts_cache")
+        if (!cacheDir.exists() && !cacheDir.mkdirs()) {
+            return@withContext requestRinSpeech(deviceToken, text)
+        }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(("sulafat:" + text).toByteArray(Charsets.UTF_8))
+        val key = digest.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val cached = File(cacheDir, "$key.wav")
+        if (cached.isFile && cached.length() > 44L) {
+            cached.setLastModified(System.currentTimeMillis())
+            return@withContext cached.readBytes()
+        }
+        val audio = requestRinSpeech(deviceToken, text)
+        val temporary = File(cacheDir, "$key.tmp")
+        temporary.writeBytes(audio)
+        if (!temporary.renameTo(cached)) {
+            temporary.delete()
+        }
+        // Hadkan cache kepada 30 respons supaya storan aplikasi tidak membesar tanpa kawalan.
+        cacheDir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".wav") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(30)
+            ?.forEach { it.delete() }
+        audio
+    }
+
 class MainActivity : ComponentActivity() {
     private var speechRecognizer: SpeechRecognizer? = null
 
@@ -346,7 +375,7 @@ fun RinApp() {
                             isSpeaking = false
                             voiceStatus = "Jawapan dipaparkan sebagai teks untuk arahan Calendar atau aplikasi lain."
                         } else {
-                            val speech = runCatching { requestRinSpeech(deviceToken, reply) }
+                            val speech = runCatching { requestRinSpeechCached(context.cacheDir, deviceToken, reply) }
                             speech.onSuccess { audio ->
                                 activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
                                 voiceStatus = "Rin sedang bercakap..."
