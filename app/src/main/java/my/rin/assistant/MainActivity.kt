@@ -184,7 +184,7 @@ fun RinApp() {
     var showSettings by remember { mutableStateOf(false) }
     val activity = androidx.compose.ui.platform.LocalContext.current as MainActivity
     val context = androidx.compose.ui.platform.LocalContext.current
-    val preferences = remember { context.getSharedPreferences("rin_private", MODE_PRIVATE) }
+    val preferences = remember { context.getSharedPreferences("rin_private", android.content.Context.MODE_PRIVATE) }
     var deviceToken by remember { mutableStateOf(preferences.getString("device_token", "") ?: "") }
     val scope = rememberCoroutineScope()
     val messages = remember {
