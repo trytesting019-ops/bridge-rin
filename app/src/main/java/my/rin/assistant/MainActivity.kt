@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
@@ -91,7 +92,9 @@ fun RinApp() {
                             shape = RoundedCornerShape(18.dp),
                             modifier = Modifier.widthIn(max = 300.dp)
                         ) {
-                            Text(line.text, Modifier.padding(14.dp), color = Color.White, fontSize = 15.sp)
+                            SelectionContainer {
+                                Text(line.text, Modifier.padding(14.dp), color = Color.White, fontSize = 15.sp)
+                            }
                         }
                     }
                 }
