@@ -63,6 +63,15 @@ private val Violet = Color(0xFF9B7BFF)
 private val Cyan = Color(0xFF69D9F5)
 private const val RIN_CHAT_URL = "https://rin-bridge.trytesting019.workers.dev/v1/chat"
 
+private fun isExternalWritingInstruction(text: String): Boolean {
+    val value = text.lowercase()
+    val target = listOf("calendar", "kalendar", "app lain", "apk lain", "aplikasi lain", "aplikasi tersebut")
+        .any { value.contains(it) }
+    val action = listOf("tulis", "masuk", "masukkan", "simpan", "catat", "letak", "buat", "hantar", "add", "write", "save", "create")
+        .any { value.contains(it) }
+    return target && action
+}
+
 data class ChatLine(val text: String, val fromUser: Boolean)
 
 private suspend fun requestRinReply(deviceToken: String, history: List<ChatLine>): String =
@@ -333,11 +342,16 @@ fun RinApp() {
                     isThinking = false
                     voiceStatus = if (result.isSuccess) "Rin sedang menyediakan suara..." else "Sambungan AI belum berjaya."
                     if (result.isSuccess) {
-                        val speech = runCatching { requestRinSpeech(deviceToken, reply) }
-                        speech.onSuccess { audio ->
-                            activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
-                            voiceStatus = "Rin sedang bercakap..."
-                        }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
+                        if (isExternalWritingInstruction(value)) {
+                            isSpeaking = false
+                            voiceStatus = "Jawapan dipaparkan sebagai teks untuk arahan Calendar atau aplikasi lain."
+                        } else {
+                            val speech = runCatching { requestRinSpeech(deviceToken, reply) }
+                            speech.onSuccess { audio ->
+                                activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
+                                voiceStatus = "Rin sedang bercakap..."
+                            }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
+                        }
                     }
                 }
             }
