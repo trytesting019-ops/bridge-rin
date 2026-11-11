@@ -131,7 +131,10 @@ private suspend fun requestRinTranscript(deviceToken: String, audioFile: File): 
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             val response = try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
-            if (status !in 200..299) throw IllegalStateException(response.optString("message").ifBlank { response.optString("error", "HTTP $status") })
+            if (status !in 200..299) {
+                val reason = response.optString("message").ifBlank { response.optString("error", "Ralat pelayan") }
+                throw IllegalStateException("HTTP $status: $reason")
+            }
             response.optString("transcript").takeIf { it.isNotBlank() } ?: throw IllegalStateException("Transkripsi kosong.")
         } finally { connection.disconnect() }
     }
@@ -463,8 +466,9 @@ fun RinApp() {
                                     voiceStatus = "Suara dikenal pasti. Rin sedang memproses..."
                                     sendMessage(result.getOrThrow(), true)
                                 } else {
-                                    draft = "Rin tidak dapat mengenal suara: ${result.exceptionOrNull()?.message ?: "ralat rangkaian"}"
-                                    voiceStatus = "Pengecaman suara gagal."
+                                    val detail = result.exceptionOrNull()?.message ?: "Ralat rangkaian tidak diketahui."
+                                    voiceStatus = "Pengecaman suara gagal — $detail"
+                                    // Jangan paparkan transkrip atau ralat sebagai teks perbualan.
                                 }
                             }
                         } else {
