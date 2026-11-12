@@ -144,7 +144,9 @@ private suspend fun requestRinTranscript(deviceToken: String, audioFile: File): 
         } finally { connection.disconnect() }
     }
 
-private suspend fun requestRinSpeech(deviceToken: String, text: String): ByteArray =
+private data class RinSpeechAudio(val bytes: ByteArray, val mimeType: String, val sampleRate: Int = 24000)
+
+private suspend fun requestRinSpeech(deviceToken: String, text: String): RinSpeechAudio =
     withContext(Dispatchers.IO) {
         val connection = (URL("https://rin-bridge.trytesting019.workers.dev/v1/tts").openConnection() as HttpURLConnection)
         try {
@@ -154,47 +156,90 @@ private suspend fun requestRinSpeech(deviceToken: String, text: String): ByteArr
             connection.doOutput = true
             connection.setRequestProperty("Authorization", "Bearer $deviceToken")
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            connection.setRequestProperty("Accept", "application/json")
             val payload = JSONObject().put("text", text.take(3000)).toString()
             connection.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             val response = try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
-            if (status !in 200..299) throw IllegalStateException(response.optString("message").ifBlank { response.optString("error", "HTTP $status") })
-            val encoded = response.optString("audio")
-            if (encoded.isBlank()) throw IllegalStateException("Audio Rin kosong.")
-            Base64.decode(encoded, Base64.DEFAULT)
-        } finally { connection.disconnect() }
+            if (status !in 200..299) {
+                val detail = response.optString("message").ifBlank { response.optString("error", "HTTP $status") }
+                throw IllegalStateException("Servis suara gagal: $detail")
+            }
+            val encoded = response.optString("audio").ifBlank { response.optString("audioBase64") }
+            if (encoded.isBlank()) {
+                val detail = response.optString("message").ifBlank { response.optString("error") }
+                throw IllegalStateException(if (detail.isNotBlank()) detail else "Servis TTS tidak memulangkan data audio (medan audio kosong).")
+            }
+            val mime = response.optString("mimeType")
+                .ifBlank { response.optString("mime_type") }
+                .ifBlank { "audio/L16;rate=24000" }
+            val rateFromMime = Regex("rate\\s*=\\s*(\\d+)", RegexOption.IGNORE_CASE)
+                .find(mime)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val sampleRate = response.optInt("sampleRate", rateFromMime ?: 24000).coerceIn(8000, 48000)
+            val bytes = try { Base64.decode(encoded, Base64.DEFAULT) }
+                catch (e: Exception) { throw IllegalStateException("Data audio TTS bukan Base64 yang sah.", e) }
+            if (bytes.isEmpty()) throw IllegalStateException("Data audio TTS kosong.")
+            RinSpeechAudio(bytes, mime, sampleRate)
+        } finally {
+            connection.disconnect()
+        }
     }
 
-private suspend fun requestRinSpeechCached(cacheRoot: File, deviceToken: String, text: String): ByteArray =
+private suspend fun requestRinSpeechCached(cacheRoot: File, deviceToken: String, text: String): RinSpeechAudio =
     withContext(Dispatchers.IO) {
         val cacheDir = File(cacheRoot, "rin_tts_cache")
-        if (!cacheDir.exists() && !cacheDir.mkdirs()) {
-            return@withContext requestRinSpeech(deviceToken, text)
-        }
+        if (!cacheDir.exists() && !cacheDir.mkdirs()) return@withContext requestRinSpeech(deviceToken, text)
         val digest = java.security.MessageDigest.getInstance("SHA-256")
             .digest(("sulafat:" + text).toByteArray(Charsets.UTF_8))
         val key = digest.joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        val cached = File(cacheDir, "$key.wav")
-        if (cached.isFile && cached.length() > 44L) {
+        val cached = File(cacheDir, "$key.audio")
+        val mimeFile = File(cacheDir, "$key.mime")
+        if (cached.isFile && cached.length() > 0L && mimeFile.isFile) {
+            val metadata = mimeFile.readText().split("|")
+            val mime = metadata.getOrNull(0).orEmpty().ifBlank { "audio/L16;rate=24000" }
+            val rate = metadata.getOrNull(1)?.toIntOrNull() ?: 24000
             cached.setLastModified(System.currentTimeMillis())
-            return@withContext cached.readBytes()
+            return@withContext RinSpeechAudio(cached.readBytes(), mime, rate)
         }
         val audio = requestRinSpeech(deviceToken, text)
         val temporary = File(cacheDir, "$key.tmp")
-        temporary.writeBytes(audio)
-        if (!temporary.renameTo(cached)) {
-            temporary.delete()
-        }
-        // Hadkan cache kepada 30 respons supaya storan aplikasi tidak membesar tanpa kawalan.
-        cacheDir.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".wav") }
-            ?.sortedByDescending { it.lastModified() }
-            ?.drop(30)
-            ?.forEach { it.delete() }
+        temporary.writeBytes(audio.bytes)
+        if (temporary.renameTo(cached)) {
+            mimeFile.writeText(audio.mimeType + "|" + audio.sampleRate)
+        } else temporary.delete()
+        cacheDir.listFiles()?.filter { it.isFile && (it.name.endsWith(".audio") || it.name.endsWith(".mime")) }
+            ?.groupBy { it.name.substringBeforeLast('.') }
+            ?.entries?.sortedByDescending { entry -> File(cacheDir, entry.key + ".audio").lastModified() }
+            ?.drop(30)?.forEach { entry ->
+                File(cacheDir, entry.key + ".audio").delete()
+                File(cacheDir, entry.key + ".mime").delete()
+            }
         audio
     }
+
+private fun pcm16BigEndianToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
+    val usableLength = pcm.size - (pcm.size % 2)
+    val output = java.io.ByteArrayOutputStream(44 + usableLength)
+    fun writeAscii(value: String) { output.write(value.toByteArray(Charsets.US_ASCII)) }
+    fun writeInt(value: Int) {
+        output.write(value and 0xff); output.write((value shr 8) and 0xff)
+        output.write((value shr 16) and 0xff); output.write((value shr 24) and 0xff)
+    }
+    fun writeShort(value: Int) { output.write(value and 0xff); output.write((value shr 8) and 0xff) }
+    writeAscii("RIFF"); writeInt(36 + usableLength); writeAscii("WAVE")
+    writeAscii("fmt "); writeInt(16); writeShort(1); writeShort(1)
+    writeInt(sampleRate); writeInt(sampleRate * 2); writeShort(2); writeShort(16)
+    writeAscii("data"); writeInt(usableLength)
+    var i = 0
+    while (i < usableLength) {
+        output.write(pcm[i + 1].toInt() and 0xff)
+        output.write(pcm[i].toInt() and 0xff)
+        i += 2
+    }
+    return output.toByteArray()
+}
 
 class MainActivity : ComponentActivity() {
     private var speechRecognizer: SpeechRecognizer? = null
@@ -256,19 +301,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun playRinVoice(audio: ByteArray, onStart: () -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
+    fun playRinVoice(audio: RinSpeechAudio, onStart: () -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
+        var file: File? = null
         try {
-            val file = File(cacheDir, "rin_reply.wav")
-            file.writeBytes(audio)
+            val mime = audio.mimeType.lowercase()
+            val isPcm16 = mime.contains("l16") || mime.contains("pcm") || mime.contains("raw")
+            val payload = if (isPcm16) pcm16BigEndianToWav(audio.bytes, audio.sampleRate) else audio.bytes
+            val extension = if (isPcm16 || mime.contains("wav")) "wav" else "media"
+            file = File(cacheDir, "rin_reply.$extension")
+            file.writeBytes(payload)
             voicePlayer?.release()
             voicePlayer = MediaPlayer().also { player ->
-                player.setDataSource(file.absolutePath)
-                player.setOnPreparedListener { onStart(); it.start() }
-                player.setOnCompletionListener { it.release(); if (voicePlayer === it) voicePlayer = null; file.delete(); onComplete() }
-                player.setOnErrorListener { mp, _, _ -> mp.release(); voicePlayer = null; file.delete(); onError("Audio suara Rin tidak dapat dimainkan."); true }
+                player.setOnPreparedListener { mp ->
+                    try { mp.start(); onStart() }
+                    catch (e: Exception) { mp.release(); voicePlayer = null; file?.delete(); onError("Android gagal memulakan audio: ${e.localizedMessage ?: "ralat playback"}") }
+                }
+                player.setOnCompletionListener { it.release(); if (voicePlayer === it) voicePlayer = null; file?.delete(); onComplete() }
+                player.setOnErrorListener { mp, what, extra ->
+                    mp.release(); voicePlayer = null; file?.delete()
+                    onError("Format audio tidak disokong Android (kod $what/$extra, jenis $mime).")
+                    true
+                }
+                player.setDataSource(file!!.absolutePath)
                 player.prepareAsync()
             }
-        } catch (exception: Exception) { onError("Suara Rin gagal dimainkan: ${exception.localizedMessage ?: "ralat audio"}") }
+        } catch (exception: Exception) {
+            voicePlayer?.release(); voicePlayer = null; file?.delete()
+            onError("Suara Rin gagal dimainkan: ${exception.localizedMessage ?: "ralat audio"}")
+        }
     }
     override fun onDestroy() {
         speechRecognizer?.destroy()
