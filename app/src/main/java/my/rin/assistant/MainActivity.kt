@@ -144,7 +144,7 @@ private suspend fun requestRinTranscript(deviceToken: String, audioFile: File): 
         } finally { connection.disconnect() }
     }
 
-private data class RinSpeechAudio(val bytes: ByteArray, val mimeType: String, val sampleRate: Int = 24000)
+data class RinSpeechAudio(val bytes: ByteArray, val mimeType: String, val sampleRate: Int = 24000)
 
 private suspend fun requestRinSpeech(deviceToken: String, text: String): RinSpeechAudio =
     withContext(Dispatchers.IO) {
