@@ -6,6 +6,9 @@ import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.RecognitionListener
@@ -42,6 +45,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -81,6 +85,7 @@ private fun isExternalWritingInstruction(text: String): Boolean {
 }
 
 data class ChatLine(val text: String, val fromUser: Boolean, val showInChat: Boolean = true)
+data class RinInstalledApp(val label: String, val packageName: String)
 
 private suspend fun requestRinReply(deviceToken: String, history: List<ChatLine>): String =
     withContext(Dispatchers.IO) {
@@ -330,6 +335,26 @@ class MainActivity : ComponentActivity() {
             onError("Suara Rin gagal dimainkan: ${exception.localizedMessage ?: "ralat audio"}")
         }
     }
+    fun getInstalledLaunchableApps(): List<RinInstalledApp> {
+        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        return packageManager.queryIntentActivities(launcherIntent, 0)
+            .mapNotNull { info ->
+                val label = info.loadLabel(packageManager)?.toString()?.trim().orEmpty()
+                val packageName = info.activityInfo?.packageName.orEmpty()
+                if (label.isBlank() || packageName.isBlank()) null
+                else RinInstalledApp(label, packageName)
+            }
+            .distinctBy { it.packageName }
+            .sortedBy { it.label.lowercase() }
+    }
+
+    fun launchInstalledApp(packageName: String): Boolean {
+        val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return false
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(launch)
+        return true
+    }
+
     fun openAppFromCommand(command: String): String? {
         val normalized = command.lowercase()
             .replace(Regex("[^a-z0-9\\s]"), " ")
@@ -348,52 +373,30 @@ class MainActivity : ComponentActivity() {
             .removeSuffix(" sekarang").trim()
         if (requested.isBlank()) return null
 
-        // Alias popular; selain ini, nama aplikasi dibaca terus daripada launcher Android.
         val aliases = mapOf(
-            "wa" to "whatsapp", "whatsapp" to "whatsapp",
-            "fb" to "facebook", "ig" to "instagram",
-            "yt" to "youtube", "maps" to "maps",
-            "google map" to "maps", "google maps" to "maps",
-            "galeri" to "gallery", "gambar" to "gallery",
-            "kamera" to "camera", "tetapan" to "settings",
-            "kalendar" to "calendar", "mesej" to "messages",
-            "telefon" to "phone", "panggilan" to "phone",
-            "fail" to "files", "pengurus fail" to "files"
+            "wa" to "whatsapp", "fb" to "facebook", "ig" to "instagram",
+            "yt" to "youtube", "google map" to "maps", "google maps" to "maps",
+            "galeri" to "gallery", "gambar" to "gallery", "kamera" to "camera",
+            "tetapan" to "settings", "kalendar" to "calendar", "mesej" to "messages",
+            "telefon" to "phone", "panggilan" to "phone", "fail" to "files",
+            "pengurus fail" to "files"
         )
         val target = aliases[requested] ?: requested
-        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val installedApps = packageManager.queryIntentActivities(launcherIntent, 0)
-            .distinctBy { it.activityInfo.packageName }
-
-        fun labelOf(info: android.content.pm.ResolveInfo): String =
-            info.loadLabel(packageManager).toString().lowercase()
+        val matching = getInstalledLaunchableApps().map { app ->
+            val label = app.label.lowercase()
                 .replace(Regex("[^a-z0-9\\s]"), " ")
                 .replace(Regex("\\s+"), " ").trim()
-
-        val matching = installedApps.map { info ->
-            val label = labelOf(info)
-            val packageName = info.activityInfo.packageName.lowercase()
             val score = when {
                 label == target -> 0
                 label.startsWith("$target ") -> 1
                 label.contains(target) -> 2
-                packageName.substringAfterLast('.').replace("_", " ").contains(target.replace(" ", "")) -> 3
+                app.packageName.substringAfterLast('.').replace("_", " ").contains(target.replace(" ", "")) -> 3
                 else -> 100
             }
-            info to score
-        }.filter { it.second < 100 }
-            .sortedBy { it.second }
+            app to score
+        }.filter { it.second < 100 }.sortedBy { it.second }.firstOrNull()?.first
 
-        val selected = matching.firstOrNull()?.first
-        if (selected != null) {
-            val packageName = selected.activityInfo.packageName
-            val launch = packageManager.getLaunchIntentForPackage(packageName)
-            if (launch != null) {
-                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(launch)
-                return selected.loadLabel(packageManager).toString()
-            }
-        }
+        if (matching != null && launchInstalledApp(matching.packageName)) return matching.label
         return "NOT_INSTALLED:$requested"
     }
 
@@ -471,6 +474,9 @@ fun RinApp() {
     var isSpeaking by remember { mutableStateOf(false) }
     var voiceStatus by remember { mutableStateOf("AI dalam talian belum diuji pada peranti.") }
     var showSettings by remember { mutableStateOf(false) }
+    var showAppsDialog by remember { mutableStateOf(false) }
+    var appSearch by remember { mutableStateOf("") }
+    var installedApps by remember { mutableStateOf(emptyList<RinInstalledApp>()) }
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var attachedImage by remember { mutableStateOf<Bitmap?>(null) }
     val activity = androidx.compose.ui.platform.LocalContext.current as MainActivity
@@ -478,6 +484,30 @@ fun RinApp() {
     val preferences = remember { context.getSharedPreferences("rin_private", android.content.Context.MODE_PRIVATE) }
     var deviceToken by remember { mutableStateOf(preferences.getString("device_token", "") ?: "") }
     val scope = rememberCoroutineScope()
+    val appRefreshReceiver = remember {
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                installedApps = activity.getInstalledLaunchableApps()
+            }
+        }
+    }
+    LaunchedEffect(Unit) {
+        installedApps = activity.getInstalledLaunchableApps()
+    }
+    DisposableEffect(context) {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        ContextCompat.registerReceiver(context, appRefreshReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        onDispose { runCatching { context.unregisterReceiver(appRefreshReceiver) } }
+    }
+    val filteredInstalledApps = installedApps.filter {
+        appSearch.isBlank() || it.label.contains(appSearch, ignoreCase = true) ||
+            it.packageName.contains(appSearch, ignoreCase = true)
+    }
     val galleryPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             attachedImage = runCatching { context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) } }.getOrNull()
@@ -599,6 +629,14 @@ fun RinApp() {
                     Text("● ${if (deviceToken.isNotBlank()) "AI sedia" else "Tetapan"}",
                         Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                         color = Color(0xFF70E4C4), fontSize = 12.sp)
+                }
+                TextButton(onClick = {
+                    installedApps = activity.getInstalledLaunchableApps()
+                    showAppsDialog = true
+                }) {
+                    Icon(Icons.Default.Apps, contentDescription = "Senarai aplikasi", tint = Cyan)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Apps ${installedApps.size}", color = Cyan, fontSize = 12.sp)
                 }
                 IconButton(onClick = { showSettings = true }) {
                     Icon(Icons.Default.Settings, contentDescription = "Tetapan AI", tint = Cyan)
@@ -740,6 +778,50 @@ fun RinApp() {
             Text("Gemini AI • Suara Bahasa Melayu Rin",
                 color = Color(0xFF9298B8), fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.CenterHorizontally))
+        }
+
+        if (showAppsDialog) {
+            AlertDialog(
+                onDismissRequest = { showAppsDialog = false },
+                title = { Text("Aplikasi dalam telefon (${installedApps.size})") },
+                text = {
+                    Column(Modifier.heightIn(max = 460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = appSearch,
+                            onValueChange = { appSearch = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Cari aplikasi") },
+                            singleLine = true
+                        )
+                        LazyColumn(Modifier.heightIn(max = 350.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            items(filteredInstalledApps, key = { it.packageName }) { app ->
+                                TextButton(
+                                    onClick = {
+                                        val opened = activity.launchInstalledApp(app.packageName)
+                                        voiceStatus = if (opened) "Membuka ${app.label}..." else "Aplikasi ${app.label} tidak dapat dibuka."
+                                        showAppsDialog = false
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(app.label, modifier = Modifier.weight(1f), color = Color.White)
+                                    Text("BUKA", color = Cyan, fontSize = 11.sp)
+                                }
+                            }
+                        }
+                        if (filteredInstalledApps.isEmpty()) {
+                            Text("Tiada aplikasi sepadan.", color = Color.LightGray)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        installedApps = activity.getInstalledLaunchableApps()
+                    }) { Text("Imbas semula") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAppsDialog = false; appSearch = "" }) { Text("Tutup") }
+                }
+            )
         }
 
         if (showSettings) {
