@@ -356,19 +356,25 @@ class MainActivity : ComponentActivity() {
     }
 
     fun openAppFromCommand(command: String): String? {
-        val normalized = command.lowercase()
+        // Remove the wake phrase before interpreting the actual user command.
+        var normalized = command.lowercase()
             .replace(Regex("[^a-z0-9\\s]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+        normalized = normalized
+            .replace(Regex("^(hai|hi|hey|hello)\\s+rin\\b\\s*"), "")
+            .replace(Regex("^rin\\b\\s*"), "")
+            .trim()
+
+        // Only launch an app when the user explicitly asks to open/run one.
+        // Ordinary conversation such as "ya betul" or "call Zailani" must
+        // continue to the assistant instead of being treated as app names.
         val openWords = listOf("buka", "bukakan", "launch", "open", "jalankan", "bukalah")
         var requested = normalized
-        for (word in openWords) {
-            if (requested == word) return null
-            if (requested.startsWith("$word ")) {
-                requested = requested.removePrefix("$word ").trim()
-                break
-            }
-        }
+        val openWord = openWords.firstOrNull { requested == it || requested.startsWith("$it ") }
+            ?: return null
+        if (requested == openWord) return null
+        requested = requested.removePrefix("$openWord ").trim()
         requested = requested.removePrefix("aplikasi ").removePrefix("app ").trim()
             .removeSuffix(" sekarang").trim()
         if (requested.isBlank()) return null
