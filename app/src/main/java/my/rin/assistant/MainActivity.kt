@@ -330,6 +330,46 @@ class MainActivity : ComponentActivity() {
             onError("Suara Rin gagal dimainkan: ${exception.localizedMessage ?: "ralat audio"}")
         }
     }
+    fun openAppFromCommand(command: String): String? {
+        val normalized = command.lowercase()
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        val aliases = linkedMapOf(
+            "whatsapp" to listOf("com.whatsapp", "com.whatsapp.w4b"),
+            "youtube" to listOf("com.google.android.youtube"),
+            "google maps" to listOf("com.google.android.apps.maps"),
+            "maps" to listOf("com.google.android.apps.maps"),
+            "calendar" to listOf("com.google.android.calendar"),
+            "kalendar" to listOf("com.google.android.calendar"),
+            "settings" to listOf("com.android.settings"),
+            "tetapan" to listOf("com.android.settings"),
+            "camera" to listOf("com.android.camera2", "com.mediatek.camera"),
+            "kamera" to listOf("com.android.camera2", "com.mediatek.camera"),
+            "clock" to listOf("com.google.android.deskclock", "com.android.deskclock"),
+            "jam" to listOf("com.google.android.deskclock", "com.android.deskclock"),
+            "phone" to listOf("com.google.android.dialer", "com.android.dialer"),
+            "telefon" to listOf("com.google.android.dialer", "com.android.dialer"),
+            "messages" to listOf("com.google.android.apps.messaging", "com.android.messaging"),
+            "mesej" to listOf("com.google.android.apps.messaging", "com.android.messaging"),
+            "chrome" to listOf("com.android.chrome")
+        )
+        val openWords = listOf("buka", "bukakan", "launch", "open", "jalankan")
+        val requested = aliases.keys.firstOrNull { app ->
+            normalized == app || openWords.any { normalized.startsWith("$it ") && normalized.substringAfter("$it ").contains(app) }
+        } ?: return null
+        val packages = aliases[requested].orEmpty()
+        for (packageName in packages) {
+            val launch = packageManager.getLaunchIntentForPackage(packageName)
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(launch)
+                return requested
+            }
+        }
+        return "NOT_INSTALLED:$requested"
+    }
+
     override fun onDestroy() {
         speechRecognizer?.destroy()
         speechRecognizer = null
@@ -430,7 +470,18 @@ fun RinApp() {
     val sendMessage: (String, Boolean) -> Unit = { rawValue, fromVoice ->
         val value = rawValue.trim()
         if (value.isNotEmpty()) {
-            if (deviceToken.isBlank()) {
+            val launchedApp = activity.openAppFromCommand(value)
+            if (launchedApp != null) {
+                if (launchedApp.startsWith("NOT_INSTALLED:")) {
+                    val appName = launchedApp.substringAfter(":")
+                    voiceStatus = "Aplikasi $appName tidak ditemui atau belum dipasang."
+                    messages.add(ChatLine(voiceStatus, false))
+                } else {
+                    voiceStatus = "Membuka $launchedApp..."
+                    messages.add(ChatLine("Baik, Rin sedang membuka $launchedApp.", false))
+                }
+                draft = ""
+            } else if (deviceToken.isBlank()) {
                 voiceStatus = "Masukkan DEVICE_TOKEN melalui Tetapan AI dahulu."
                 showSettings = true
             } else {
