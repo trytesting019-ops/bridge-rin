@@ -335,36 +335,63 @@ class MainActivity : ComponentActivity() {
             .replace(Regex("[^a-z0-9\\s]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
-        val aliases = linkedMapOf(
-            "whatsapp" to listOf("com.whatsapp", "com.whatsapp.w4b"),
-            "youtube" to listOf("com.google.android.youtube"),
-            "google maps" to listOf("com.google.android.apps.maps"),
-            "maps" to listOf("com.google.android.apps.maps"),
-            "calendar" to listOf("com.google.android.calendar"),
-            "kalendar" to listOf("com.google.android.calendar"),
-            "settings" to listOf("com.android.settings"),
-            "tetapan" to listOf("com.android.settings"),
-            "camera" to listOf("com.android.camera2", "com.mediatek.camera"),
-            "kamera" to listOf("com.android.camera2", "com.mediatek.camera"),
-            "clock" to listOf("com.google.android.deskclock", "com.android.deskclock"),
-            "jam" to listOf("com.google.android.deskclock", "com.android.deskclock"),
-            "phone" to listOf("com.google.android.dialer", "com.android.dialer"),
-            "telefon" to listOf("com.google.android.dialer", "com.android.dialer"),
-            "messages" to listOf("com.google.android.apps.messaging", "com.android.messaging"),
-            "mesej" to listOf("com.google.android.apps.messaging", "com.android.messaging"),
-            "chrome" to listOf("com.android.chrome")
+        val openWords = listOf("buka", "bukakan", "launch", "open", "jalankan", "bukalah")
+        var requested = normalized
+        for (word in openWords) {
+            if (requested == word) return null
+            if (requested.startsWith("$word ")) {
+                requested = requested.removePrefix("$word ").trim()
+                break
+            }
+        }
+        requested = requested.removePrefix("aplikasi ").removePrefix("app ").trim()
+            .removeSuffix(" sekarang").trim()
+        if (requested.isBlank()) return null
+
+        // Alias popular; selain ini, nama aplikasi dibaca terus daripada launcher Android.
+        val aliases = mapOf(
+            "wa" to "whatsapp", "whatsapp" to "whatsapp",
+            "fb" to "facebook", "ig" to "instagram",
+            "yt" to "youtube", "maps" to "maps",
+            "google map" to "maps", "google maps" to "maps",
+            "galeri" to "gallery", "gambar" to "gallery",
+            "kamera" to "camera", "tetapan" to "settings",
+            "kalendar" to "calendar", "mesej" to "messages",
+            "telefon" to "phone", "panggilan" to "phone",
+            "fail" to "files", "pengurus fail" to "files"
         )
-        val openWords = listOf("buka", "bukakan", "launch", "open", "jalankan")
-        val requested = aliases.keys.firstOrNull { app ->
-            normalized == app || openWords.any { normalized.startsWith("$it ") && normalized.substringAfter("$it ").contains(app) }
-        } ?: return null
-        val packages = aliases[requested].orEmpty()
-        for (packageName in packages) {
+        val target = aliases[requested] ?: requested
+        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val installedApps = packageManager.queryIntentActivities(launcherIntent, 0)
+            .distinctBy { it.activityInfo.packageName }
+
+        fun labelOf(info: android.content.pm.ResolveInfo): String =
+            info.loadLabel(packageManager).toString().lowercase()
+                .replace(Regex("[^a-z0-9\\s]"), " ")
+                .replace(Regex("\\s+"), " ").trim()
+
+        val matching = installedApps.map { info ->
+            val label = labelOf(info)
+            val packageName = info.activityInfo.packageName.lowercase()
+            val score = when {
+                label == target -> 0
+                label.startsWith("$target ") -> 1
+                label.contains(target) -> 2
+                packageName.substringAfterLast('.').replace("_", " ").contains(target.replace(" ", "")) -> 3
+                else -> 100
+            }
+            info to score
+        }.filter { it.second < 100 }
+            .sortedBy { it.second }
+
+        val selected = matching.firstOrNull()?.first
+        if (selected != null) {
+            val packageName = selected.activityInfo.packageName
             val launch = packageManager.getLaunchIntentForPackage(packageName)
             if (launch != null) {
                 launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(launch)
-                return requested
+                return selected.loadLabel(packageManager).toString()
             }
         }
         return "NOT_INSTALLED:$requested"
