@@ -403,19 +403,21 @@ class MainActivity : ComponentActivity() {
         normalized = normalized
             .replace(Regex("^(hai|hi|hey|hello)\\s+rin\\b\\s*"), "")
             .replace(Regex("^rin\\b\\s*"), "")
+            // Accept natural polite Malay/English phrasing from speech transcription.
+            .replace(Regex("^(tolong|sila|boleh tak|boleh ke|boleh|cuba|please|can you|could you)\\s+"), "")
             .trim()
 
         // Only launch an app when the user explicitly asks to open/run one.
         // Ordinary conversation such as "ya betul" or "call Zailani" must
         // continue to the assistant instead of being treated as app names.
-        val openWords = listOf("buka", "bukakan", "launch", "open", "jalankan", "bukalah")
+        val openWords = listOf("buka", "bukakan", "bukalah", "bukakanlah", "launch", "open", "jalankan")
         var requested = normalized
         val openWord = openWords.firstOrNull { requested == it || requested.startsWith("$it ") }
             ?: return null
         if (requested == openWord) return null
         requested = requested.removePrefix("$openWord ").trim()
         requested = requested.removePrefix("aplikasi ").removePrefix("app ").trim()
-            .removeSuffix(" sekarang").trim()
+            .removeSuffix(" sekarang").removeSuffix(" ya").trim()
         if (requested.isBlank()) return null
 
         val aliases = mapOf(
