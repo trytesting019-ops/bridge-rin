@@ -20,9 +20,6 @@ import android.content.Context
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -256,7 +253,7 @@ private fun pcm16BigEndianToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
 }
 
 class MainActivity : ComponentActivity() {
-    private var speechRecognizer: SpeechRecognizer? = null
+    private var mediaRecorder: MediaRecorder? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -279,81 +276,89 @@ class MainActivity : ComponentActivity() {
         stopService(Intent(this, RinVoiceForegroundService::class.java))
     }
 
-    fun startLiveSpeech(
+    /**
+     * Records a short AAC/M4A segment and sends it to the server transcription endpoint.
+     * This path deliberately does not call Android SpeechRecognizer or Google speech services.
+     */
+    fun startLiveTranscription(
+        deviceToken: String,
+        scope: kotlinx.coroutines.CoroutineScope,
         onReady: () -> Unit,
-        onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
         onError: (String) -> Unit
     ): Boolean {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            onError("Perkhidmatan pengecaman suara Android tidak tersedia. Pasang atau aktifkan Speech Services dan bahasa Melayu.")
+        if (deviceToken.isBlank()) {
+            onError("Masukkan DEVICE_TOKEN dalam Tetapan AI dahulu.")
             return false
         }
+        stopLiveSpeech()
+        val audioFile = File(cacheDir, "rin_mic_${System.currentTimeMillis()}.m4a")
         return try {
-            speechRecognizer?.let { old -> runCatching { old.cancel(); old.destroy() } }
-            val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
-            speechRecognizer = recognizer
-            recognizer.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) { onReady() }
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val words = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()?.trim().orEmpty()
-                    if (words.isNotBlank()) onPartial(words)
-                }
-                override fun onResults(results: Bundle?) {
-                    if (speechRecognizer !== recognizer) return
-                    val words = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()?.trim().orEmpty()
-                    speechRecognizer = null
-                    runCatching { recognizer.destroy() }
-                    if (words.isNotBlank()) onFinal(words) else onError("SILENCE")
-                }
-                override fun onError(error: Int) {
-                    if (speechRecognizer !== recognizer) return
-                    speechRecognizer = null
-                    runCatching { recognizer.destroy() }
-                    if (error == SpeechRecognizer.ERROR_NO_MATCH ||
-                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
-                        error == SpeechRecognizer.ERROR_CLIENT) {
+            val recorder = MediaRecorder(this)
+            mediaRecorder = recorder
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioChannels(1)
+            recorder.setAudioSamplingRate(16000)
+            recorder.setAudioEncodingBitRate(64000)
+            recorder.setOutputFile(audioFile.absolutePath)
+            recorder.setMaxDuration(5000)
+            recorder.setOnInfoListener { source, what, _ ->
+                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED && mediaRecorder === source) {
+                    mediaRecorder = null
+                    runCatching { source.stop() }
+                    runCatching { source.reset() }
+                    runCatching { source.release() }
+                    if (!audioFile.isFile || audioFile.length() < 1024L) {
+                        audioFile.delete()
                         onError("SILENCE")
-                    } else if (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
-                        onError("Enjin Google tidak menerima bahasa Melayu pada peranti ini. Pastikan internet aktif dan kemas kini Speech Recognition and Synthesis from Google di Google Play, kemudian cuba semula.")
                     } else {
-                        onError("Pengecaman suara gagal (kod $error). Semak Speech Services dan kebenaran mikrofon.")
+                        scope.launch {
+                            try {
+                                val transcript = requestRinTranscript(deviceToken, audioFile)
+                                if (transcript.isBlank()) onError("SILENCE") else onFinal(transcript)
+                            } catch (exception: Exception) {
+                                val detail = exception.message ?: "Ralat transkripsi tidak diketahui."
+                                if (detail.contains("Transkripsi kosong", ignoreCase = true)) {
+                                    onError("SILENCE")
+                                } else {
+                                    onError("Transkripsi gagal: $detail")
+                                }
+                            } finally {
+                                audioFile.delete()
+                            }
+                        }
                     }
                 }
-            })
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ms-MY")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ms-MY")
-                putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
             }
-            recognizer.startListening(intent)
+            recorder.setOnErrorListener { source, _, extra ->
+                if (mediaRecorder === source) mediaRecorder = null
+                runCatching { source.reset() }
+                runCatching { source.release() }
+                audioFile.delete()
+                onError("Rakaman mikrofon gagal (kod $extra). Semak kebenaran mikrofon.")
+            }
+            recorder.prepare()
+            recorder.start()
+            onReady()
             true
         } catch (exception: Exception) {
-            speechRecognizer?.let { runCatching { it.destroy() } }
-            speechRecognizer = null
+            mediaRecorder?.let { runCatching { it.reset() }; runCatching { it.release() } }
+            mediaRecorder = null
+            audioFile.delete()
             onError("Mikrofon tidak dapat dimulakan: ${exception.localizedMessage ?: "ralat tidak diketahui"}")
             false
         }
     }
 
     fun stopLiveSpeech() {
-        speechRecognizer?.let { recognizer ->
-            speechRecognizer = null
-            runCatching { recognizer.cancel() }
-            runCatching { recognizer.destroy() }
+        val recorder = mediaRecorder
+        mediaRecorder = null
+        if (recorder != null) {
+            runCatching { recorder.stop() }
+            runCatching { recorder.reset() }
+            runCatching { recorder.release() }
         }
     }
 
@@ -679,22 +684,24 @@ fun RinApp() {
 
     startListeningNow = {
         if (voiceConversationEnabled && !isThinking && !isSpeaking && !isListening) {
-            isListening = activity.startLiveSpeech(
-                onReady = { isListening = true; voiceStatus = "Rin sedang mendengar. Bercakap seperti biasa..." },
-                onPartial = { draft = it; isListening = true },
+            isListening = activity.startLiveTranscription(
+                deviceToken = deviceToken,
+                scope = scope,
+                onReady = { isListening = true; voiceStatus = "Rin sedang mendengar (transkripsi server)..."; draft = "" },
                 onFinal = { phrase ->
                     isListening = false
                     draft = ""
-                    voiceStatus = "Arahan dikenal pasti. Rin sedang menjawab..."
+                    voiceStatus = "Bahasa Melayu dikenal pasti. Rin sedang menjawab..."
                     sendMessage(phrase, true)
                 },
                 onError = { problem ->
                     isListening = false
                     if (problem == "SILENCE" && voiceConversationEnabled) {
-                        voiceStatus = "Rin masih mendengar..."
-                        scope.launch { kotlinx.coroutines.delay(450); startListeningNow?.invoke() }
+                        voiceStatus = "Tiada suara dikesan. Rin cuba mendengar semula..."
+                        scope.launch { kotlinx.coroutines.delay(350); startListeningNow?.invoke() }
                     } else {
                         voiceConversationEnabled = false
+                        activity.stopVoiceForegroundService()
                         voiceStatus = problem
                     }
                 }
