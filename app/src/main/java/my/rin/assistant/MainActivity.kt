@@ -285,19 +285,17 @@ class MainActivity : ComponentActivity() {
                     if (words.isNotBlank()) onPartial(words)
                 }
                 override fun onResults(results: Bundle?) {
+                    if (speechRecognizer !== recognizer) return
                     val words = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         ?.firstOrNull()?.trim().orEmpty()
-                    if (speechRecognizer === recognizer) {
-                        speechRecognizer = null
-                        runCatching { recognizer.destroy() }
-                    }
+                    speechRecognizer = null
+                    runCatching { recognizer.destroy() }
                     if (words.isNotBlank()) onFinal(words) else onError("SILENCE")
                 }
                 override fun onError(error: Int) {
-                    if (speechRecognizer === recognizer) {
-                        speechRecognizer = null
-                        runCatching { recognizer.destroy() }
-                    }
+                    if (speechRecognizer !== recognizer) return
+                    speechRecognizer = null
+                    runCatching { recognizer.destroy() }
                     if (error == SpeechRecognizer.ERROR_NO_MATCH ||
                         error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
                         error == SpeechRecognizer.ERROR_CLIENT) {
