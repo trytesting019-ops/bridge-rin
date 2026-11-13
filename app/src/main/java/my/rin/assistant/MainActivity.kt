@@ -302,7 +302,13 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) {
             recorder.release()
             mediaRecorder = null
-            recor    fun playRinVoice(audio: RinSpeechAudio, onStart: () -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
+            recordingFile = null
+            file?.delete()
+            null
+        }
+    }
+
+    fun playRinVoice(audio: RinSpeechAudio, onStart: () -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
         try {
             val mime = audio.mimeType
             if (!mime.startsWith("audio/l16", ignoreCase = true)) {
@@ -367,9 +373,7 @@ class MainActivity : ComponentActivity() {
             onError("Suara Sulafat gagal dimainkan: ${exception.localizedMessage ?: "ralat audio"}")
         }
     }
- dimainkan: ${exception.localizedMessage ?: "ralat audio"}")
-        }
-    }
+
     fun getInstalledLaunchableApps(): List<RinInstalledApp> {
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         return packageManager.queryIntentActivities(launcherIntent, 0)
@@ -447,7 +451,7 @@ class MainActivity : ComponentActivity() {
         try { mediaRecorder?.stop() } catch (_: Exception) { }
         try { mediaRecorder?.release() } catch (_: Exception) { }
         mediaRecorder = null
-        voiceTrack?.let { runCatching { if (it.playState == AudioTrack.PLAYSTATE_PLAYING) it.stop(); it.release() } }
+        voiceTrack?.let { track -> runCatching { track.stop() }; runCatching { track.release() } }
         voiceTrack = null
         super.onDestroy()
     }
