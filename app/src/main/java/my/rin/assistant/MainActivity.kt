@@ -3,7 +3,9 @@ package my.rin.assistant
 import android.Manifest
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaPlayer
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.content.Intent
 import android.content.BroadcastReceiver
@@ -256,7 +258,7 @@ class MainActivity : ComponentActivity() {
 
     private var mediaRecorder: MediaRecorder? = null
     private var recordingFile: File? = null
-    private var voicePlayer: MediaPlayer? = null
+    @Volatile private var voiceTrack: AudioTrack? = null
 
     fun startVoiceInput(
         onReady: () -> Unit,
@@ -300,39 +302,72 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) {
             recorder.release()
             mediaRecorder = null
-            recordingFile = null
-            file?.delete()
-            null
+            recor    fun playRinVoice(audio: RinSpeechAudio, onStart: () -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
+        try {
+            val mime = audio.mimeType
+            if (!mime.startsWith("audio/l16", ignoreCase = true)) {
+                throw IllegalStateException("Format bukan PCM 16-bit: $mime")
+            }
+            val rate = audio.sampleRate.coerceIn(8000, 48000)
+            val channels = Regex("channels=(\\d+)", RegexOption.IGNORE_CASE).find(mime)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+            val pcm = audio.bytes
+            if (channels != 1 || pcm.isEmpty() || pcm.size % 2 != 0) {
+                throw IllegalStateException("Data PCM tidak sah; audio mono PCM16 diperlukan.")
+            }
+            val minBuffer = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            if (minBuffer <= 0) throw IllegalStateException("Sample rate PCM tidak disokong: $rate Hz")
+            voiceTrack?.let { previous ->
+                runCatching {
+                    if (previous.playState == AudioTrack.PLAYSTATE_PLAYING) previous.pause()
+                    previous.flush()
+                    previous.stop()
+                    previous.release()
+                }
+            }
+            val track = AudioTrack.Builder()
+                .setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build())
+                .setAudioFormat(AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build())
+                .setBufferSizeInBytes(maxOf(minBuffer, pcm.size))
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .build()
+            voiceTrack = track
+            Thread({
+                try {
+                    val written = track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                    if (written != pcm.size) throw IllegalStateException("Data PCM tidak lengkap: $written daripada ${pcm.size} bait")
+                    track.play()
+                    runOnUiThread { onStart() }
+                    val frames = pcm.size / 2
+                    while (track.playState == AudioTrack.PLAYSTATE_PLAYING &&
+                        track.playbackHeadPosition.toLong() < frames.toLong()) {
+                        Thread.sleep(20)
+                    }
+                    runOnUiThread {
+                        if (voiceTrack === track) voiceTrack = null
+                        onComplete()
+                    }
+                } catch (exception: Exception) {
+                    runOnUiThread {
+                        if (voiceTrack === track) voiceTrack = null
+                        onError("Suara Sulafat gagal dimainkan: ${exception.localizedMessage ?: "ralat PCM"}")
+                    }
+                } finally {
+                    runCatching { if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.stop() }
+                    runCatching { track.release() }
+                }
+            }, "RinSulafatPlayback").start()
+        } catch (exception: Exception) {
+            onError("Suara Sulafat gagal dimainkan: ${exception.localizedMessage ?: "ralat audio"}")
         }
     }
-
-    fun playRinVoice(audio: RinSpeechAudio, onStart: () -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
-        var file: File? = null
-        try {
-            val mime = audio.mimeType.lowercase()
-            val isPcm16 = mime.contains("l16") || mime.contains("pcm") || mime.contains("raw")
-            val payload = if (isPcm16) pcm16BigEndianToWav(audio.bytes, audio.sampleRate) else audio.bytes
-            val extension = if (isPcm16 || mime.contains("wav")) "wav" else "media"
-            file = File(cacheDir, "rin_reply.$extension")
-            file.writeBytes(payload)
-            voicePlayer?.release()
-            voicePlayer = MediaPlayer().also { player ->
-                player.setOnPreparedListener { mp ->
-                    try { mp.start(); onStart() }
-                    catch (e: Exception) { mp.release(); voicePlayer = null; file?.delete(); onError("Android gagal memulakan audio: ${e.localizedMessage ?: "ralat playback"}") }
-                }
-                player.setOnCompletionListener { it.release(); if (voicePlayer === it) voicePlayer = null; file?.delete(); onComplete() }
-                player.setOnErrorListener { mp, what, extra ->
-                    mp.release(); voicePlayer = null; file?.delete()
-                    onError("Format audio tidak disokong Android (kod $what/$extra, jenis $mime).")
-                    true
-                }
-                player.setDataSource(file!!.absolutePath)
-                player.prepareAsync()
-            }
-        } catch (exception: Exception) {
-            voicePlayer?.release(); voicePlayer = null; file?.delete()
-            onError("Suara Rin gagal dimainkan: ${exception.localizedMessage ?: "ralat audio"}")
+ dimainkan: ${exception.localizedMessage ?: "ralat audio"}")
         }
     }
     fun getInstalledLaunchableApps(): List<RinInstalledApp> {
@@ -412,8 +447,8 @@ class MainActivity : ComponentActivity() {
         try { mediaRecorder?.stop() } catch (_: Exception) { }
         try { mediaRecorder?.release() } catch (_: Exception) { }
         mediaRecorder = null
-        voicePlayer?.release()
-        voicePlayer = null
+        voiceTrack?.let { runCatching { if (it.playState == AudioTrack.PLAYSTATE_PLAYING) it.stop(); it.release() } }
+        voiceTrack = null
         super.onDestroy()
     }
 }
