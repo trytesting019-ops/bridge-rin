@@ -707,13 +707,19 @@ fun RinApp() {
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
+            voiceStatus = "Kebenaran mikrofon diterima. Mengaktifkan suara Rin..."
             if (activity.startVoiceForegroundService()) {
                 voiceConversationEnabled = true
-                startListeningNow?.invoke()
-                voiceStatus = "Mod suara latar belakang diaktifkan."
+                scope.launch {
+                    kotlinx.coroutines.delay(300)
+                    if (voiceConversationEnabled) {
+                        voiceStatus = "Memulakan pengecaman suara..."
+                        startListeningNow?.invoke()
+                    }
+                }
             } else {
                 voiceConversationEnabled = false
-                voiceStatus = "Rin tidak dapat memulakan servis suara latar belakang."
+                voiceStatus = "Servis suara gagal dimulakan. Cuba buka semula RinBridge."
             }
         } else {
             voiceConversationEnabled = false
@@ -817,40 +823,38 @@ fun RinApp() {
                         DropdownMenuItem(text = { Text("Pilih gambar") }, leadingIcon = { Icon(Icons.Default.Photo, null) }, onClick = { showAttachmentMenu = false; galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
                     }
                 }
-                FilledTonalButton(
-                    onClick = {
-                        if (voiceConversationEnabled) {
-                            voiceConversationEnabled = false
-                            isListening = false
-                            activity.stopLiveSpeech()
-                            activity.stopVoiceForegroundService()
-                            voiceStatus = "Mod suara dimatikan."
-                        } else if (ContextCompat.checkSelfPermission(
-                                activity, Manifest.permission.RECORD_AUDIO
-                            ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            if (activity.startVoiceForegroundService()) {
-                                voiceConversationEnabled = true
-                                voiceStatus = "Mengaktifkan mikrofon dan pengecaman suara..."
-                                startListeningNow?.invoke()
-                            } else {
-                                voiceStatus = "Rin tidak dapat memulakan servis suara latar belakang."
+                IconButton(onClick = {
+                    if (voiceConversationEnabled) {
+                        voiceConversationEnabled = false
+                        isListening = false
+                        activity.stopLiveSpeech()
+                        activity.stopVoiceForegroundService()
+                        voiceStatus = "Mod suara dimatikan."
+                    } else if (ContextCompat.checkSelfPermission(
+                            activity, Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        voiceStatus = "Mengaktifkan mikrofon..."
+                        if (activity.startVoiceForegroundService()) {
+                            voiceConversationEnabled = true
+                            scope.launch {
+                                kotlinx.coroutines.delay(300)
+                                if (voiceConversationEnabled) {
+                                    voiceStatus = "Memulakan pengecaman suara..."
+                                    startListeningNow?.invoke()
+                                }
                             }
                         } else {
-                            voiceStatus = "Meminta kebenaran mikrofon..."
-                            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                            voiceStatus = "Servis suara gagal dimulakan. Cuba buka semula RinBridge."
                         }
-                    },
-                    modifier = Modifier.sizeIn(minWidth = 88.dp, minHeight = 52.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = if (voiceConversationEnabled) Color(0xFF572F48) else Color(0xFF263653),
-                        contentColor = if (voiceConversationEnabled) Color(0xFFFFA0A0) else Cyan
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    Icon(Icons.Default.Mic, contentDescription = null)
-                    Spacer(Modifier.width(5.dp))
-                    Text(if (voiceConversationEnabled) "MATI" else "MIC")
+                    } else {
+                        voiceStatus = "Meminta kebenaran mikrofon Android..."
+                        microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }) {
+                    Icon(Icons.Default.Mic,
+                        contentDescription = if (voiceConversationEnabled) "Matikan perbualan suara" else "Aktifkan perbualan suara",
+                        tint = if (voiceConversationEnabled) Color(0xFFFF8585) else Cyan)
                 }
                 TextField(
                     value = draft,
