@@ -256,56 +256,89 @@ class MainActivity : ComponentActivity() {
         setContent { RinApp() }
     }
 
-    private var mediaRecorder: MediaRecorder? = null
-    private var recordingFile: File? = null
     @Volatile private var voiceTrack: AudioTrack? = null
 
-    fun startVoiceInput(
+    fun startLiveSpeech(
         onReady: () -> Unit,
         onPartial: (String) -> Unit,
         onFinal: (String) -> Unit,
         onError: (String) -> Unit
     ): Boolean {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            onError("Perkhidmatan pengecaman suara Android tidak tersedia. Pasang atau aktifkan Speech Services dan bahasa Melayu.")
+            return false
+        }
         return try {
-            val file = File(cacheDir, "rin_voice_${System.currentTimeMillis()}.m4a")
-            val recorder = MediaRecorder()
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            recorder.setAudioEncodingBitRate(96000)
-            recorder.setAudioSamplingRate(44100)
-            recorder.setOutputFile(file.absolutePath)
-            recorder.prepare()
-            recorder.start()
-            mediaRecorder = recorder
-            recordingFile = file
-            onReady()
+            speechRecognizer?.let { old -> runCatching { old.cancel(); old.destroy() } }
+            val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+            speechRecognizer = recognizer
+            recognizer.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) { onReady() }
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val words = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()?.trim().orEmpty()
+                    if (words.isNotBlank()) onPartial(words)
+                }
+                override fun onResults(results: Bundle?) {
+                    val words = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()?.trim().orEmpty()
+                    if (speechRecognizer === recognizer) {
+                        speechRecognizer = null
+                        runCatching { recognizer.destroy() }
+                    }
+                    if (words.isNotBlank()) onFinal(words) else onError("SILENCE")
+                }
+                override fun onError(error: Int) {
+                    if (speechRecognizer === recognizer) {
+                        speechRecognizer = null
+                        runCatching { recognizer.destroy() }
+                    }
+                    if (error == SpeechRecognizer.ERROR_NO_MATCH ||
+                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
+                        error == SpeechRecognizer.ERROR_CLIENT) {
+                        onError("SILENCE")
+                    } else {
+                        onError("Pengecaman suara gagal (kod $error). Semak Speech Services dan kebenaran mikrofon.")
+                    }
+                }
+            })
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ms-MY")
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ms-MY")
+                putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+            }
+            recognizer.startListening(intent)
             true
         } catch (exception: Exception) {
-            mediaRecorder?.release()
-            mediaRecorder = null
+            speechRecognizer?.let { runCatching { it.destroy() } }
+            speechRecognizer = null
             onError("Mikrofon tidak dapat dimulakan: ${exception.localizedMessage ?: "ralat tidak diketahui"}")
             false
         }
     }
 
-    fun stopVoiceInput(): File? {
-        val recorder = mediaRecorder ?: return null
-        val file = recordingFile
-        return try {
-            recorder.stop()
-            recorder.reset()
-            recorder.release()
-            mediaRecorder = null
-            recordingFile = null
-            file?.takeIf { it.exists() && it.length() > 1000L }
-        } catch (_: Exception) {
-            recorder.release()
-            mediaRecorder = null
-            recordingFile = null
-            file?.delete()
-            null
+    fun stopLiveSpeech() {
+        speechRecognizer?.let { recognizer ->
+            speechRecognizer = null
+            runCatching { recognizer.cancel() }
+            runCatching { recognizer.destroy() }
         }
+    }
+
+    override fun onDestroy() {
+        stopLiveSpeech()
+        super.onDestroy()
     }
 
     fun playRinVoice(audio: RinSpeechAudio, onStart: () -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
@@ -517,6 +550,7 @@ private fun RinAvatar(isListening: Boolean, isThinking: Boolean, isSpeaking: Boo
 fun RinApp() {
     var draft by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
+    var voiceConversationEnabled by remember { mutableStateOf(false) }
     var isThinking by remember { mutableStateOf(false) }
     var isSpeaking by remember { mutableStateOf(false) }
     var voiceStatus by remember { mutableStateOf("AI dalam talian belum diuji pada peranti.") }
@@ -571,6 +605,8 @@ fun RinApp() {
         mutableStateListOf(ChatLine("Hai. Rin sedia membantu.", false))
     }
 
+    var startListeningNow: (() -> Unit)? = null
+
     val sendMessage: (String, Boolean) -> Unit = { rawValue, fromVoice ->
         val value = rawValue.trim()
         if (value.isNotEmpty()) {
@@ -585,6 +621,7 @@ fun RinApp() {
                     messages.add(ChatLine("Baik, Rin sedang membuka $launchedApp.", false))
                 }
                 draft = ""
+                if (voiceConversationEnabled) scope.launch { kotlinx.coroutines.delay(700); startListeningNow?.invoke() }
             } else if (deviceToken.isBlank()) {
                 voiceStatus = "Masukkan DEVICE_TOKEN melalui Tetapan AI dahulu."
                 showSettings = true
@@ -609,21 +646,49 @@ fun RinApp() {
                     isSpeaking = false
                     if (!result.isSuccess) {
                         voiceStatus = "Sambungan AI belum berjaya."
+                        if (fromVoice && voiceConversationEnabled) startListeningNow?.invoke()
                     } else if (!fromVoice) {
                         // Text/chat mode must remain silent. Only a reply to an explicitly
                         // voice-originated request may generate and play Sulafat audio.
                         voiceStatus = "Jawapan teks dipaparkan. Aktifkan mod suara untuk mendengar Rin."
                     } else if (isExternalWritingInstruction(value)) {
-                        voiceStatus = "Jawapan dipaparkan sebagai teks untuk arahan Calendar atau aplikasi lain."
+                        voiceStatus = "Jawapan dipaparkan sebagai teks untuk arahan aplikasi lain."
+                        if (voiceConversationEnabled) startListeningNow?.invoke()
                     } else {
                         val speech = runCatching { requestRinSpeechCached(context.cacheDir, deviceToken, reply) }
                         speech.onSuccess { audio ->
-                            activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
+                            activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap."; if (voiceConversationEnabled) startListeningNow?.invoke() }, onError = { isSpeaking = false; voiceStatus = it; if (voiceConversationEnabled) startListeningNow?.invoke() })
                             voiceStatus = "Rin sedang bercakap..."
-                        }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
+                        }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}"; if (voiceConversationEnabled) startListeningNow?.invoke() }
                     }
                 }
             }
+        }
+    }
+
+    startListeningNow = {
+        if (voiceConversationEnabled && !isThinking && !isSpeaking && !isListening) {
+            isListening = activity.startLiveSpeech(
+                onReady = { isListening = true; voiceStatus = "Rin sedang mendengar. Bercakap seperti biasa..." },
+                onPartial = { draft = it; isListening = true },
+                onFinal = { phrase ->
+                    isListening = false
+                    draft = ""
+                    voiceStatus = "Arahan dikenal pasti. Rin sedang menjawab..."
+                    sendMessage(phrase, true)
+                },
+                onError = { problem ->
+                    isListening = false
+                    if (problem == "SILENCE" && voiceConversationEnabled) {
+                        voiceStatus = "Rin masih mendengar..."
+                        scope.launch { kotlinx.coroutines.delay(450); startListeningNow?.invoke() }
+                    } else {
+                        voiceConversationEnabled = false
+                        voiceStatus = problem
+                    }
+                }
+            )
+            if (isListening) voiceStatus = "Menyediakan pengecaman suara langsung..."
         }
     }
 
@@ -631,21 +696,10 @@ fun RinApp() {
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            isListening = activity.startVoiceInput(
-                onReady = { voiceStatus = "Rin sedang mendengar..." },
-                onPartial = { draft = it },
-                onFinal = {
-                    draft = it
-                    isListening = false
-                    voiceStatus = "Suara berjaya ditukar kepada teks."
-                },
-                onError = {
-                    isListening = false
-                    voiceStatus = it
-                }
-            )
-            if (isListening) voiceStatus = "Menyediakan mikrofon..."
+            voiceConversationEnabled = true
+            startListeningNow?.invoke()
         } else {
+            voiceConversationEnabled = false
             isListening = false
             voiceStatus = "Kebenaran mikrofon tidak diberikan."
         }
@@ -747,53 +801,24 @@ fun RinApp() {
                     }
                 }
                 IconButton(onClick = {
-                    if (isListening) {
-                        val audioFile = activity.stopVoiceInput()
+                    if (voiceConversationEnabled) {
+                        voiceConversationEnabled = false
                         isListening = false
-                        if (audioFile != null && deviceToken.isNotBlank()) {
-                            isThinking = true
-                            voiceStatus = "Rin sedang menukar suara kepada teks..." 
-                            scope.launch {
-                                val result = runCatching { requestRinTranscript(deviceToken, audioFile) }
-                                audioFile.delete()
-                                isThinking = false
-                                if (result.isSuccess) {
-                                    voiceStatus = "Suara dikenal pasti. Rin sedang memproses..."
-                                    sendMessage(result.getOrThrow(), true)
-                                } else {
-                                    draft = "Rin tidak dapat mengenal suara: ${result.exceptionOrNull()?.message ?: "ralat rangkaian"}"
-                                    voiceStatus = "Pengecaman suara gagal."
-                                }
-                            }
-                        } else {
-                            audioFile?.delete()
-                            voiceStatus = if (deviceToken.isBlank()) "Masukkan DEVICE_TOKEN dalam Tetapan AI dahulu." else "Rakaman terlalu pendek. Cuba sekali lagi."
-                        }
+                        activity.stopLiveSpeech()
+                        voiceStatus = "Mod suara dimatikan."
                     } else if (ContextCompat.checkSelfPermission(
                             activity, Manifest.permission.RECORD_AUDIO
                         ) == PackageManager.PERMISSION_GRANTED
                     ) {
-                        isListening = activity.startVoiceInput(
-                            onReady = { voiceStatus = "Rin sedang mendengar..." },
-                            onPartial = { draft = it },
-                            onFinal = {
-                                draft = it
-                                isListening = false
-                                voiceStatus = "Suara berjaya ditukar kepada teks."
-                            },
-                            onError = {
-                                isListening = false
-                                voiceStatus = it
-                            }
-                        )
-                        if (isListening) voiceStatus = "Menyediakan mikrofon..."
+                        voiceConversationEnabled = true
+                        startListeningNow?.invoke()
                     } else {
                         microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 }) {
                     Icon(Icons.Default.Mic,
-                        contentDescription = if (isListening) "Hentikan mikrofon" else "Aktifkan mikrofon",
-                        tint = if (isListening) Color(0xFFFF8585) else Cyan)
+                        contentDescription = if (voiceConversationEnabled) "Matikan perbualan suara" else "Aktifkan perbualan suara",
+                        tint = if (voiceConversationEnabled) Color(0xFFFF8585) else Cyan)
                 }
                 TextField(
                     value = draft,
