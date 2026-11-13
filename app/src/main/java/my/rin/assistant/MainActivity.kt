@@ -321,6 +321,8 @@ class MainActivity : ComponentActivity() {
                         error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
                         error == SpeechRecognizer.ERROR_CLIENT) {
                         onError("SILENCE")
+                    } else if (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
+                        onError("Bahasa Melayu tidak disokong oleh pakej pengecaman luar talian. Rin kini menggunakan pengecaman dalam talian; semak internet dan kemas kini Speech Services by Google.")
                     } else {
                         onError("Pengecaman suara gagal (kod $error). Semak Speech Services dan kebenaran mikrofon.")
                     }
@@ -333,7 +335,7 @@ class MainActivity : ComponentActivity() {
                 putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
             }
