@@ -478,16 +478,6 @@ class MainActivity : ComponentActivity() {
         return "NOT_INSTALLED:$requested"
     }
 
-    override fun onDestroy() {
-        speechRecognizer?.destroy()
-        speechRecognizer = null
-        try { mediaRecorder?.stop() } catch (_: Exception) { }
-        try { mediaRecorder?.release() } catch (_: Exception) { }
-        mediaRecorder = null
-        voiceTrack?.let { track -> runCatching { track.stop() }; runCatching { track.release() } }
-        voiceTrack = null
-        super.onDestroy()
-    }
 }
 
 @Composable
