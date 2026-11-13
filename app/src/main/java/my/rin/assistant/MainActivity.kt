@@ -322,7 +322,7 @@ class MainActivity : ComponentActivity() {
                         error == SpeechRecognizer.ERROR_CLIENT) {
                         onError("SILENCE")
                     } else if (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
-                        onError("Bahasa Melayu tidak disokong oleh pakej pengecaman luar talian. Rin kini menggunakan pengecaman dalam talian; semak internet dan kemas kini Speech Services by Google.")
+                        onError("Enjin Google tidak menerima bahasa Melayu pada peranti ini. Pastikan internet aktif dan kemas kini Speech Recognition and Synthesis from Google di Google Play, kemudian cuba semula.")
                     } else {
                         onError("Pengecaman suara gagal (kod $error). Semak Speech Services dan kebenaran mikrofon.")
                     }
@@ -817,31 +817,40 @@ fun RinApp() {
                         DropdownMenuItem(text = { Text("Pilih gambar") }, leadingIcon = { Icon(Icons.Default.Photo, null) }, onClick = { showAttachmentMenu = false; galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
                     }
                 }
-                IconButton(onClick = {
-                    if (voiceConversationEnabled) {
-                        voiceConversationEnabled = false
-                        isListening = false
-                        activity.stopLiveSpeech()
-                        activity.stopVoiceForegroundService()
-                        voiceStatus = "Mod suara dimatikan."
-                    } else if (ContextCompat.checkSelfPermission(
-                            activity, Manifest.permission.RECORD_AUDIO
-                        ) == PackageManager.PERMISSION_GRANTED
-                    ) {
-                        if (activity.startVoiceForegroundService()) {
-                            voiceConversationEnabled = true
-                            startListeningNow?.invoke()
-                            voiceStatus = "Mod suara latar belakang diaktifkan."
+                FilledTonalButton(
+                    onClick = {
+                        if (voiceConversationEnabled) {
+                            voiceConversationEnabled = false
+                            isListening = false
+                            activity.stopLiveSpeech()
+                            activity.stopVoiceForegroundService()
+                            voiceStatus = "Mod suara dimatikan."
+                        } else if (ContextCompat.checkSelfPermission(
+                                activity, Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            if (activity.startVoiceForegroundService()) {
+                                voiceConversationEnabled = true
+                                voiceStatus = "Mengaktifkan mikrofon dan pengecaman suara..."
+                                startListeningNow?.invoke()
+                            } else {
+                                voiceStatus = "Rin tidak dapat memulakan servis suara latar belakang."
+                            }
                         } else {
-                            voiceStatus = "Rin tidak dapat memulakan servis suara latar belakang."
+                            voiceStatus = "Meminta kebenaran mikrofon..."
+                            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
                         }
-                    } else {
-                        microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                }) {
-                    Icon(Icons.Default.Mic,
-                        contentDescription = if (voiceConversationEnabled) "Matikan perbualan suara" else "Aktifkan perbualan suara",
-                        tint = if (voiceConversationEnabled) Color(0xFFFF8585) else Cyan)
+                    },
+                    modifier = Modifier.sizeIn(minWidth = 88.dp, minHeight = 52.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (voiceConversationEnabled) Color(0xFF572F48) else Color(0xFF263653),
+                        contentColor = if (voiceConversationEnabled) Color(0xFFFFA0A0) else Cyan
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    Icon(Icons.Default.Mic, contentDescription = null)
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (voiceConversationEnabled) "MATI" else "MIC")
                 }
                 TextField(
                     value = draft,
