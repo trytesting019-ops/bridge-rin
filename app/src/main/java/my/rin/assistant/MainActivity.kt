@@ -20,6 +20,10 @@ import android.content.Context
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.PowerManager
+import android.os.SystemClock
+import android.content.ClipboardManager
+import android.content.ClipData
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -571,6 +575,9 @@ fun RinApp() {
     var isSpeaking by remember { mutableStateOf(false) }
     var voiceStatus by remember { mutableStateOf("AI dalam talian belum diuji pada peranti.") }
     var showSettings by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(false) }
+    var diagnosticRunning by remember { mutableStateOf(false) }
+    var diagnosticReport by remember { mutableStateOf("Belum ada ujian dijalankan.") }
     var showAppsDialog by remember { mutableStateOf(false) }
     var appSearch by remember { mutableStateOf("") }
     var installedApps by remember { mutableStateOf(emptyList<RinInstalledApp>()) }
@@ -619,6 +626,50 @@ fun RinApp() {
     }
     val messages = remember {
         mutableStateListOf(ChatLine("Hai. Rin sedia membantu.", false))
+    }
+
+    val runSelfDiagnostic: () -> Unit = {
+        if (!diagnosticRunning) {
+            diagnosticRunning = true
+            diagnosticReport = "Menjalankan pemeriksaan..."
+            scope.launch {
+                val report = StringBuilder()
+                val version = runCatching {
+                    @Suppress("DEPRECATION")
+                    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "tidak diketahui"
+                }.getOrDefault("tidak diketahui")
+                val micGranted = ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                val batteryFree = power.isIgnoringBatteryOptimizations(context.packageName)
+                report.appendLine("RIN AI SELF-DIAGNOSTIC")
+                report.appendLine("Masa: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale("ms", "MY")).format(java.util.Date())}")
+                report.appendLine("Versi APK: $version")
+                report.appendLine("Peranti: ${Build.MANUFACTURER} ${Build.MODEL} | Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+                report.appendLine("Mikrofon: ${if (micGranted) "LULUS - kebenaran diberi" else "GAGAL - kebenaran belum diberi"}")
+                report.appendLine("Servis suara latar: ${if (voiceConversationEnabled) "AKTIF" else "TIDAK AKTIF"}")
+                report.appendLine("Sekatan bateri: ${if (batteryFree) "Dikecualikan daripada optimasi bateri" else "Optimasi bateri masih boleh mengehadkan latar"}")
+                report.appendLine("Token peranti: ${if (deviceToken.isNotBlank()) "DISEDIAKAN (nilai dirahsiakan)" else "TIADA - simpan DEVICE_TOKEN dalam Tetapan"}")
+                if (deviceToken.isNotBlank()) {
+                    val aiStart = SystemClock.elapsedRealtime()
+                    val aiResult = runCatching {
+                        requestRinReply(deviceToken, listOf(ChatLine("Ujian diagnostik ringkas. Balas tepat dengan perkataan OK.", true)))
+                    }
+                    val aiMs = SystemClock.elapsedRealtime() - aiStart
+                    report.appendLine("Sambungan AI: ${if (aiResult.isSuccess) "LULUS" else "GAGAL - ${aiResult.exceptionOrNull()?.message ?: "ralat tidak diketahui"}"} (${aiMs} ms)")
+                    val ttsStart = SystemClock.elapsedRealtime()
+                    val ttsResult = runCatching { requestRinSpeech(deviceToken, "Ujian suara Rin.") }
+                    val ttsMs = SystemClock.elapsedRealtime() - ttsStart
+                    report.appendLine("TTS Sulafat: ${ttsResult.fold({ if (it.bytes.isNotEmpty()) "LULUS - ${it.bytes.size} bait, ${it.mimeType}" else "GAGAL - audio kosong" }, { "GAGAL - ${it.message ?: "ralat tidak diketahui"}" })} (${ttsMs} ms)")
+                } else {
+                    report.appendLine("Sambungan AI: TIDAK DIUJI - token belum disediakan")
+                    report.appendLine("TTS Sulafat: TIDAK DIUJI - token belum disediakan")
+                }
+                report.appendLine("Rakaman/transkripsi mikrofon: ujian fizikal dibuat apabila mod suara diaktifkan; laporan ini tidak merakam secara senyap.")
+                report.appendLine("Nota privasi: token, mesej peribadi dan kandungan audio tidak dimasukkan dalam laporan.")
+                diagnosticReport = report.toString().trim()
+                diagnosticRunning = false
+            }
+        }
     }
 
     var startListeningNow: (() -> Unit)? = null
@@ -771,6 +822,9 @@ fun RinApp() {
                     Icon(Icons.Default.Apps, contentDescription = "Senarai aplikasi", tint = Cyan)
                     Spacer(Modifier.width(4.dp))
                     Text("Apps ${installedApps.size}", color = Cyan, fontSize = 12.sp)
+                }
+                TextButton(onClick = { showDiagnostics = true }) {
+                    Text("Diagnostik", color = Cyan, fontSize = 11.sp)
                 }
                 IconButton(onClick = { showSettings = true }) {
                     Icon(Icons.Default.Settings, contentDescription = "Tetapan AI", tint = Cyan)
@@ -938,6 +992,36 @@ fun RinApp() {
                 },
                 dismissButton = {
                     TextButton(onClick = { showAppsDialog = false; appSearch = "" }) { Text("Tutup") }
+                }
+            )
+        }
+
+        if (showDiagnostics) {
+            AlertDialog(
+                onDismissRequest = { if (!diagnosticRunning) showDiagnostics = false },
+                title = { Text("Rin AI • Self-Diagnostic") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Pemeriksaan peranti dan sambungan. Ujian AI/TTS menghantar permintaan ringkas ke pelayan Rin; token tidak dipaparkan atau disalin.", fontSize = 12.sp, color = Color.LightGray)
+                        SelectionContainer {
+                            Text(diagnosticReport, color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(enabled = !diagnosticRunning, onClick = { runSelfDiagnostic() }) {
+                        Text(if (diagnosticRunning) "Menguji..." else "Jalankan ujian")
+                    }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Rin AI diagnostic", diagnosticReport))
+                            voiceStatus = "Laporan diagnostik disalin. Token dan audio tidak disertakan."
+                        }) { Text("Salin laporan") }
+                        TextButton(enabled = !diagnosticRunning, onClick = { showDiagnostics = false }) { Text("Tutup") }
+                    }
                 }
             )
         }
