@@ -606,18 +606,21 @@ fun RinApp() {
                     }
                     messages.add(ChatLine(reply, false, !fromVoice || isExternalWritingInstruction(value)))
                     isThinking = false
-                    voiceStatus = if (result.isSuccess) "Rin sedang menyediakan suara..." else "Sambungan AI belum berjaya."
-                    if (result.isSuccess) {
-                        if (isExternalWritingInstruction(value)) {
-                            isSpeaking = false
-                            voiceStatus = "Jawapan dipaparkan sebagai teks untuk arahan Calendar atau aplikasi lain."
-                        } else {
-                            val speech = runCatching { requestRinSpeechCached(context.cacheDir, deviceToken, reply) }
-                            speech.onSuccess { audio ->
-                                activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
-                                voiceStatus = "Rin sedang bercakap..."
-                            }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
-                        }
+                    isSpeaking = false
+                    if (!result.isSuccess) {
+                        voiceStatus = "Sambungan AI belum berjaya."
+                    } else if (!fromVoice) {
+                        // Text/chat mode must remain silent. Only a reply to an explicitly
+                        // voice-originated request may generate and play Sulafat audio.
+                        voiceStatus = "Jawapan teks dipaparkan. Aktifkan mod suara untuk mendengar Rin."
+                    } else if (isExternalWritingInstruction(value)) {
+                        voiceStatus = "Jawapan dipaparkan sebagai teks untuk arahan Calendar atau aplikasi lain."
+                    } else {
+                        val speech = runCatching { requestRinSpeechCached(context.cacheDir, deviceToken, reply) }
+                        speech.onSuccess { audio ->
+                            activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap." }, onError = { isSpeaking = false; voiceStatus = it })
+                            voiceStatus = "Rin sedang bercakap..."
+                        }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}" }
                     }
                 }
             }
