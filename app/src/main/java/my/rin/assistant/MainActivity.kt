@@ -15,6 +15,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.content.Intent
+import android.net.Uri
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
@@ -510,6 +511,91 @@ class MainActivity : ComponentActivity() {
         return "NOT_INSTALLED:$requested"
     }
 
+    private fun normalizedAppCommand(command: String): String {
+        return command.lowercase()
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .replace(Regex("^(hai|hi|hey|hello)\\s+rin\\b\\s*"), "")
+            .replace(Regex("^rin\\b\\s*"), "")
+            .replace(Regex("^(tolong|sila|boleh tak|boleh ke|boleh|cuba|please|can you|could you)\\s+"), "")
+            .trim()
+    }
+
+    private fun findInstalledAppByName(requestedName: String): RinInstalledApp? {
+        val target = requestedName.removePrefix("aplikasi ").removePrefix("app ").trim()
+        if (target.isBlank()) return null
+        val aliases = mapOf("wa" to "whatsapp", "fb" to "facebook", "ig" to "instagram", "yt" to "youtube")
+        val normalizedTarget = aliases[target] ?: target
+        return getInstalledLaunchableApps().map { app ->
+            val label = app.label.lowercase().replace(Regex("[^a-z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
+            val score = when {
+                label == normalizedTarget -> 0
+                label.startsWith("$normalizedTarget ") -> 1
+                label.contains(normalizedTarget) -> 2
+                else -> 100
+            }
+            app to score
+        }.filter { it.second < 100 }.minByOrNull { it.second }?.first
+    }
+
+    /**
+     * Android does not expose a public API for force-stopping another app.
+     * This opens that app's system details page so the user can confirm Force stop.
+     */
+    fun forceStopAppFromCommand(command: String): String? {
+        val normalized = normalizedAppCommand(command)
+        val words = listOf("force stop", "paksa henti", "hentikan paksa")
+        val prefix = words.firstOrNull { normalized == it || normalized.startsWith("$it ") } ?: return null
+        val requested = normalized.removePrefix(prefix).trim()
+            .removePrefix("aplikasi ").removePrefix("app ").trim()
+        if (requested.isBlank()) return "INVALID"
+        val app = findInstalledAppByName(requested) ?: return "NOT_INSTALLED:$requested"
+        return try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", app.packageName, null))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            "SETTINGS:${app.label}"
+        } catch (_: Exception) {
+            "ERROR:${app.label}"
+        }
+    }
+
+    /**
+     * "Tutup app" hides the current app screen by returning to Home.
+     * Android may keep the target app process alive; this is not a force-stop.
+     */
+    fun closeAppFromCommand(command: String): String? {
+        val normalized = normalizedAppCommand(command)
+        val words = listOf("tutup", "tutupi", "keluar dari", "close", "close app")
+        val prefix = words.firstOrNull { normalized == it || normalized.startsWith("$it ") } ?: return null
+        val requested = normalized.removePrefix(prefix).trim()
+            .removePrefix("aplikasi ").removePrefix("app ").trim()
+        if (requested.isBlank()) return "INVALID"
+        val app = findInstalledAppByName(requested) ?: return "NOT_INSTALLED:$requested"
+        return try {
+            val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(home)
+            "HIDDEN:${app.label}"
+        } catch (_: Exception) {
+            "ERROR:${app.label}"
+        }
+    }
+
+    fun exitRin() {
+        stopLiveSpeech()
+        voiceTrack?.let { track ->
+            runCatching { if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause() }
+            runCatching { track.flush() }
+            runCatching { track.stop() }
+            runCatching { track.release() }
+        }
+        voiceTrack = null
+        stopVoiceForegroundService()
+        finishAndRemoveTask()
+    }
+
 }
 
 @Composable
@@ -677,8 +763,29 @@ fun RinApp() {
     val sendMessage: (String, Boolean) -> Unit = { rawValue, fromVoice ->
         val value = rawValue.trim()
         if (value.isNotEmpty()) {
-            val launchedApp = activity.openAppFromCommand(value)
-            if (launchedApp != null) {
+            val forceStopResult = activity.forceStopAppFromCommand(value)
+            val closeResult = if (forceStopResult == null) activity.closeAppFromCommand(value) else null
+            val launchedApp = if (forceStopResult == null && closeResult == null) activity.openAppFromCommand(value) else null
+            if (forceStopResult != null) {
+                voiceStatus = when {
+                    forceStopResult == "INVALID" -> "Nyatakan nama aplikasi untuk Force Stop."
+                    forceStopResult.startsWith("NOT_INSTALLED:") -> "Aplikasi ${forceStopResult.substringAfter(":")} tidak ditemui."
+                    forceStopResult.startsWith("SETTINGS:") -> "Tetapan aplikasi ${forceStopResult.substringAfter(":")} dibuka. Tekan Force stop secara manual."
+                    else -> "Tetapan Force Stop tidak dapat dibuka."
+                }
+                messages.add(ChatLine(voiceStatus, false))
+                draft = ""
+                if (voiceConversationEnabled) scope.launch { kotlinx.coroutines.delay(900); startListeningNow?.invoke() }
+            } else if (closeResult != null) {
+                voiceStatus = when {
+                    closeResult == "INVALID" -> "Nyatakan nama aplikasi untuk ditutup."
+                    closeResult.startsWith("NOT_INSTALLED:") -> "Aplikasi ${closeResult.substringAfter(":")} tidak ditemui."
+                    closeResult.startsWith("HIDDEN:") -> "Paparan ${closeResult.substringAfter(":")} disembunyikan. Android mungkin masih mengekalkan prosesnya di latar."
+                    else -> "Paparan aplikasi tidak dapat disembunyikan."
+                }
+                messages.add(ChatLine(voiceStatus, false))
+                draft = ""
+            } else if (launchedApp != null) {
                 if (launchedApp.startsWith("NOT_INSTALLED:")) {
                     val appName = launchedApp.substringAfter(":")
                     voiceStatus = "Aplikasi $appName tidak ditemui atau belum dipasang."
@@ -828,6 +935,15 @@ fun RinApp() {
                 }
                 IconButton(onClick = { showSettings = true }) {
                     Icon(Icons.Default.Settings, contentDescription = "Tetapan AI", tint = Cyan)
+                }
+                TextButton(onClick = {
+                    voiceConversationEnabled = false
+                    isListening = false
+                    isSpeaking = false
+                    activity.exitRin()
+                }) {
+                    Icon(Icons.Default.Close, contentDescription = "Keluar Rin AI", tint = Color(0xFFFF8585))
+                    Text("Keluar", color = Color(0xFFFF8585), fontSize = 11.sp)
                 }
             }
 
