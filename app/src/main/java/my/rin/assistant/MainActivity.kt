@@ -922,13 +922,13 @@ fun RinApp() {
                         fun startLocalFallback(reason: String) {
                             val started = activity.speakLocalFallback(
                                 text = reply,
-                                onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap (suara setempat)..." },
-                                onComplete = {
+                                onSpeechStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap (suara setempat)..." },
+                                onSpeechComplete = {
                                     isSpeaking = false
                                     voiceStatus = "Rin selesai bercakap (suara setempat)."
                                     if (voiceConversationEnabled) startListeningNow?.invoke()
                                 },
-                                onError = {
+                                onSpeechError = {
                                     isSpeaking = false
                                     voiceStatus = "$reason $it"
                                     if (voiceConversationEnabled) startListeningNow?.invoke()
