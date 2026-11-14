@@ -24,6 +24,8 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.PowerManager
 import android.os.SystemClock
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.content.ClipboardManager
 import android.content.ClipData
 import androidx.activity.ComponentActivity
@@ -78,6 +80,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.util.Locale
 import java.io.File
 import android.util.Base64
 
@@ -162,6 +165,17 @@ private suspend fun requestRinTranscript(deviceToken: String, audioFile: File): 
     }
 
 data class RinSpeechAudio(val bytes: ByteArray, val mimeType: String, val sampleRate: Int = 24000)
+
+private fun ttsRateLimitCooldownMillis(error: String): Long? {
+    val lower = error.lowercase()
+    if (!lower.contains("rate limit") && !lower.contains("requests per day") && !lower.contains("free tier")) return null
+    val match = Regex("""retry in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?""", RegexOption.IGNORE_CASE).find(error)
+    val hours = match?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
+    val minutes = match?.groupValues?.getOrNull(2)?.toLongOrNull() ?: 0L
+    val seconds = match?.groupValues?.getOrNull(3)?.toLongOrNull() ?: 0L
+    val parsed = hours * 3_600_000L + minutes * 60_000L + seconds * 1_000L
+    return (if (parsed > 0L) parsed else 6 * 60 * 60 * 1_000L) + 60_000L
+}
 
 private suspend fun requestRinSpeech(deviceToken: String, text: String): RinSpeechAudio =
     withContext(Dispatchers.IO) {
@@ -260,6 +274,65 @@ private fun pcm16BigEndianToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
 
 class MainActivity : ComponentActivity() {
     private var mediaRecorder: MediaRecorder? = null
+    private var localFallbackTts: TextToSpeech? = null
+
+    fun stopLocalFallbackTts() {
+        localFallbackTts?.let { runCatching { it.stop(); it.shutdown() } }
+        localFallbackTts = null
+    }
+
+    fun speakLocalFallback(
+        text: String,
+        onStart: () -> Unit,
+        onComplete: () -> Unit,
+        onError: (String) -> Unit
+    ): Boolean {
+        stopLocalFallbackTts()
+        return try {
+            lateinit var engine: TextToSpeech
+            engine = TextToSpeech(this) { status ->
+                var finished = false
+                fun finish(action: () -> Unit) {
+                    if (finished) return
+                    finished = true
+                    if (localFallbackTts === engine) localFallbackTts = null
+                    runCatching { engine.shutdown() }
+                    action()
+                }
+                if (status != TextToSpeech.SUCCESS) {
+                    finish { onError("Enjin suara Android tidak dapat dimulakan.") }
+                    return@TextToSpeech
+                }
+                val language = engine.setLanguage(Locale("ms", "MY"))
+                if (language == TextToSpeech.LANG_MISSING_DATA || language == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    val genericMalay = engine.setLanguage(Locale("ms"))
+                    if (genericMalay == TextToSpeech.LANG_MISSING_DATA || genericMalay == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        finish { onError("Data suara Bahasa Melayu belum dipasang pada Android. Pasang suara Bahasa Melayu dalam tetapan Text-to-Speech.") }
+                        return@TextToSpeech
+                    }
+                }
+                engine.setSpeechRate(1.05f)
+                engine.setPitch(1.04f)
+                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) { onStart() }
+                    override fun onDone(utteranceId: String?) { finish { onComplete() } }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) { finish { onError("Enjin suara Android gagal membaca jawapan.") } }
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        finish { onError("Enjin suara Android gagal membaca jawapan (kod $errorCode).") }
+                    }
+                })
+                val result = engine.speak(text.take(3000), TextToSpeech.QUEUE_FLUSH, null, "rin_local_${System.currentTimeMillis()}")
+                if (result == TextToSpeech.ERROR) finish { onError("Android menolak permintaan suara setempat.") }
+            }
+            localFallbackTts = engine
+            true
+        } catch (exception: Exception) {
+            localFallbackTts = null
+            onError("Fallback suara Android gagal: ${exception.localizedMessage ?: "ralat tidak diketahui"}")
+            false
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -370,6 +443,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         stopLiveSpeech()
+        stopLocalFallbackTts()
         super.onDestroy()
     }
 
@@ -674,6 +748,7 @@ fun RinApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val preferences = remember { context.getSharedPreferences("rin_private", android.content.Context.MODE_PRIVATE) }
     var deviceToken by remember { mutableStateOf(preferences.getString("device_token", "") ?: "") }
+    var ttsCooldownUntil by remember { mutableStateOf(preferences.getLong("tts_cooldown_until", 0L)) }
     val scope = rememberCoroutineScope()
     val appRefreshReceiver = remember {
         object : BroadcastReceiver() {
@@ -743,10 +818,23 @@ fun RinApp() {
                     }
                     val aiMs = SystemClock.elapsedRealtime() - aiStart
                     report.appendLine("Sambungan AI: ${if (aiResult.isSuccess) "LULUS" else "GAGAL - ${aiResult.exceptionOrNull()?.message ?: "ralat tidak diketahui"}"} (${aiMs} ms)")
-                    val ttsStart = SystemClock.elapsedRealtime()
-                    val ttsResult = runCatching { requestRinSpeech(deviceToken, "Ujian suara Rin.") }
-                    val ttsMs = SystemClock.elapsedRealtime() - ttsStart
-                    report.appendLine("TTS Sulafat: ${ttsResult.fold({ if (it.bytes.isNotEmpty()) "LULUS - ${it.bytes.size} bait, ${it.mimeType}" else "GAGAL - audio kosong" }, { "GAGAL - ${it.message ?: "ralat tidak diketahui"}" })} (${ttsMs} ms)")
+                    val cooldownRemaining = ttsCooldownUntil - System.currentTimeMillis()
+                    if (cooldownRemaining > 0L) {
+                        val totalMinutes = (cooldownRemaining + 59_999L) / 60_000L
+                        report.appendLine("TTS Sulafat: DITANGGUHKAN - kuota TTS dalam tempoh rehat (${totalMinutes / 60}j ${totalMinutes % 60}m lagi); permintaan rangkaian tidak dihantar.")
+                    } else {
+                        val ttsStart = SystemClock.elapsedRealtime()
+                        val ttsResult = runCatching { requestRinSpeech(deviceToken, "Ujian suara Rin.") }
+                        val ttsMs = SystemClock.elapsedRealtime() - ttsStart
+                        val ttsError = ttsResult.exceptionOrNull()?.message.orEmpty()
+                        val detectedCooldown = ttsRateLimitCooldownMillis(ttsError)
+                        if (detectedCooldown != null) {
+                            ttsCooldownUntil = System.currentTimeMillis() + detectedCooldown
+                            preferences.edit().putLong("tts_cooldown_until", ttsCooldownUntil).apply()
+                        }
+                        report.appendLine("TTS Sulafat: ${ttsResult.fold({ if (it.bytes.isNotEmpty()) "LULUS - ${it.bytes.size} bait, ${it.mimeType}" else "GAGAL - audio kosong" }, { "GAGAL - ${it.message ?: "ralat tidak diketahui"}" })} (${ttsMs} ms)")
+                    }
+                    report.appendLine("Fallback suara Android: DISEDIAKAN - digunakan apabila Sulafat Gemini gagal atau kuota habis.")
                 } else {
                     report.appendLine("Sambungan AI: TIDAK DIUJI - token belum disediakan")
                     report.appendLine("TTS Sulafat: TIDAK DIUJI - token belum disediakan")
@@ -831,11 +919,49 @@ fun RinApp() {
                         voiceStatus = "Jawapan dipaparkan sebagai teks untuk arahan aplikasi lain."
                         if (voiceConversationEnabled) startListeningNow?.invoke()
                     } else {
-                        val speech = runCatching { requestRinSpeechCached(context.cacheDir, deviceToken, reply) }
-                        speech.onSuccess { audio ->
-                            activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap."; if (voiceConversationEnabled) startListeningNow?.invoke() }, onError = { isSpeaking = false; voiceStatus = it; if (voiceConversationEnabled) startListeningNow?.invoke() })
-                            voiceStatus = "Rin sedang bercakap..."
-                        }.onFailure { voiceStatus = "Jawapan teks tersedia, tetapi suara gagal: ${it.message ?: "ralat TTS"}"; if (voiceConversationEnabled) startListeningNow?.invoke() }
+                        fun startLocalFallback(reason: String) {
+                            val started = activity.speakLocalFallback(
+                                text = reply,
+                                onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap (suara setempat)..." },
+                                onComplete = {
+                                    isSpeaking = false
+                                    voiceStatus = "Rin selesai bercakap (suara setempat)."
+                                    if (voiceConversationEnabled) startListeningNow?.invoke()
+                                },
+                                onError = {
+                                    isSpeaking = false
+                                    voiceStatus = "$reason $it"
+                                    if (voiceConversationEnabled) startListeningNow?.invoke()
+                                }
+                            )
+                            if (started) {
+                                voiceStatus = "$reason Menggunakan suara Bahasa Melayu Android."
+                            } else {
+                                isSpeaking = false
+                                if (voiceConversationEnabled) startListeningNow?.invoke()
+                            }
+                        }
+                        val remainingCooldown = ttsCooldownUntil - System.currentTimeMillis()
+                        if (remainingCooldown > 0L) {
+                            val minutes = (remainingCooldown + 59_999L) / 60_000L
+                            startLocalFallback("Kuota Sulafat Gemini sedang berehat (${minutes / 60}j ${minutes % 60}m lagi).")
+                        } else {
+                            val speech = runCatching { requestRinSpeechCached(context.cacheDir, deviceToken, reply) }
+                            speech.onSuccess { audio ->
+                                activity.playRinVoice(audio, onStart = { isSpeaking = true; voiceStatus = "Rin sedang bercakap..." }, onComplete = { isSpeaking = false; voiceStatus = "Rin selesai bercakap."; if (voiceConversationEnabled) startListeningNow?.invoke() }, onError = { isSpeaking = false; voiceStatus = it; if (voiceConversationEnabled) startListeningNow?.invoke() })
+                                voiceStatus = "Rin sedang bercakap..."
+                            }.onFailure { error ->
+                                val cooldown = ttsRateLimitCooldownMillis(error.message.orEmpty())
+                                if (cooldown != null) {
+                                    ttsCooldownUntil = System.currentTimeMillis() + cooldown
+                                    preferences.edit().putLong("tts_cooldown_until", ttsCooldownUntil).apply()
+                                    val minutes = (cooldown + 59_999L) / 60_000L
+                                    startLocalFallback("Kuota Sulafat Gemini habis (rehat kira-kira ${minutes / 60}j ${minutes % 60}m).")
+                                } else {
+                                    startLocalFallback("Sulafat Gemini tidak dapat digunakan buat sementara.")
+                                }
+                            }
+                        }
                     }
                 }
             }
