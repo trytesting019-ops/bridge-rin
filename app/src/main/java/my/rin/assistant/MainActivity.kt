@@ -283,9 +283,9 @@ class MainActivity : ComponentActivity() {
 
     fun speakLocalFallback(
         text: String,
-        onStart: () -> Unit,
-        onComplete: () -> Unit,
-        onError: (String) -> Unit
+        onSpeechStart: () -> Unit,
+        onSpeechComplete: () -> Unit,
+        onSpeechError: (String) -> Unit
     ): Boolean {
         stopLocalFallbackTts()
         return try {
@@ -300,36 +300,36 @@ class MainActivity : ComponentActivity() {
                     action()
                 }
                 if (status != TextToSpeech.SUCCESS) {
-                    finish { onError("Enjin suara Android tidak dapat dimulakan.") }
+                    finish { onSpeechError("Enjin suara Android tidak dapat dimulakan.") }
                     return@TextToSpeech
                 }
                 val language = engine.setLanguage(Locale("ms", "MY"))
                 if (language == TextToSpeech.LANG_MISSING_DATA || language == TextToSpeech.LANG_NOT_SUPPORTED) {
                     val genericMalay = engine.setLanguage(Locale("ms"))
                     if (genericMalay == TextToSpeech.LANG_MISSING_DATA || genericMalay == TextToSpeech.LANG_NOT_SUPPORTED) {
-                        finish { onError("Data suara Bahasa Melayu belum dipasang pada Android. Pasang suara Bahasa Melayu dalam tetapan Text-to-Speech.") }
+                        finish { onSpeechError("Data suara Bahasa Melayu belum dipasang pada Android. Pasang suara Bahasa Melayu dalam tetapan Text-to-Speech.") }
                         return@TextToSpeech
                     }
                 }
                 engine.setSpeechRate(1.05f)
                 engine.setPitch(1.04f)
                 engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) { onStart() }
-                    override fun onDone(utteranceId: String?) { finish { onComplete() } }
+                    override fun onStart(utteranceId: String?) { onSpeechStart() }
+                    override fun onDone(utteranceId: String?) { finish { onSpeechComplete() } }
                     @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) { finish { onError("Enjin suara Android gagal membaca jawapan.") } }
+                    override fun onError(utteranceId: String?) { finish { onSpeechError("Enjin suara Android gagal membaca jawapan.") } }
                     override fun onError(utteranceId: String?, errorCode: Int) {
-                        finish { onError("Enjin suara Android gagal membaca jawapan (kod $errorCode).") }
+                        finish { onSpeechError("Enjin suara Android gagal membaca jawapan (kod $errorCode).") }
                     }
                 })
                 val result = engine.speak(text.take(3000), TextToSpeech.QUEUE_FLUSH, null, "rin_local_${System.currentTimeMillis()}")
-                if (result == TextToSpeech.ERROR) finish { onError("Android menolak permintaan suara setempat.") }
+                if (result == TextToSpeech.ERROR) finish { onSpeechError("Android menolak permintaan suara setempat.") }
             }
             localFallbackTts = engine
             true
         } catch (exception: Exception) {
             localFallbackTts = null
-            onError("Fallback suara Android gagal: ${exception.localizedMessage ?: "ralat tidak diketahui"}")
+            onSpeechError("Fallback suara Android gagal: ${exception.localizedMessage ?: "ralat tidak diketahui"}")
             false
         }
     }
