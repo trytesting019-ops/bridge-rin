@@ -786,6 +786,7 @@ fun RinApp() {
                 }
                 messages.add(ChatLine(voiceStatus, false))
                 draft = ""
+                if (voiceConversationEnabled) scope.launch { kotlinx.coroutines.delay(900); startListeningNow?.invoke() }
             } else if (launchedApp != null) {
                 if (launchedApp.startsWith("NOT_INSTALLED:")) {
                     val appName = launchedApp.substringAfter(":")
