@@ -2,7 +2,7 @@ name: Build Rin APK
 
 on:
   push:
-    branches: [ main, 'upgrade/build25-voice-fix', 'upgrade/build41-keep-apps-sulafat', 'upgrade/live-speech-handsfree' ]
+    branches: [ main, 'upgrade/build25-voice-fix', 'upgrade/build41-keep-apps-sulafat', 'upgrade/live-speech-handsfree', 'upgrade/build55-app-controls-exit' ]
   workflow_dispatch:
 
 permissions:
