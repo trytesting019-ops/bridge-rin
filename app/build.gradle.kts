@@ -12,8 +12,8 @@ android {
         applicationId = "my.rin.assistant"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 55
+        versionName = "1.0.55"
     }
 
     buildFeatures { compose = true }
